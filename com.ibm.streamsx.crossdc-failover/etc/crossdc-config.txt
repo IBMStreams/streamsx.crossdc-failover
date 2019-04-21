@@ -1,0 +1,85 @@
+#==============================================================
+# First created on: Oct/11/2018
+# Last modified on: Apr/19/2019
+#
+# 1) This reference file has the configuration details for one data center (dc1).
+#    You can take a copy of this file and change the configuration below to suit your 
+#    data center specific values. After that, pass the fully qualified
+#    name for this file via a CrossDataCenterFailover composite 
+#    parameter named configFileName in your application. 
+#    Specific configuration parameters that will change are listed here:
+#    DC1 name, DC1 operation mode, Remote DC2 application machine name(s) and 
+#    Data snapshot storage directory.
+#
+# 2) You can take a copy of this file and modify the configuration 
+#    for the other data center (dc2).
+#    Specific configuration parameters that will change are listed here:
+#    DC2 name, DC2 operation mode, Remote DC1 application machine name(s) and 
+#    Data snapshot storage directory.
+#
+# NOTE
+# ---- 
+# Please note that you can use this way of specifying the 
+# crossdc-failover configuration details via a text file 
+# irrespective of whether you will run your application as
+# distributed or standalone. In case your application is
+# run as distributed and if you want to store the crossdc-failover
+# configuration details in the IBM Streams appconfig facility,
+# please see a reference shell script (make-crossdc-appconfig.sh)
+# available in the same directory as the text file you are currently reading.
+# Configuration details specified via this text based
+# config file will always take precedence even if you have
+# made another set of configuration via the app config facility.
+#==============================================================
+# Specify a name for this local data center.
+localDataCenterName=dc1
+# Specify the operation mode for this local data center: 0 for passive, 1 for active
+crossDCOperationMode=1
+# Specify the HTTP port number you want to use for the Cross DC Http Receiver.
+crossDCHttpPort=25091
+#
+# In the property below, you can either give a single or multiple Streams application machine name(s) or
+# the IP addresses of those machines that are used in the remote Data Center dc2. 
+# If you have multiple machines, separate them by a comma: Machine1,Machine2,Machine3
+remoteDataCenterApplicationMachineNames=d0702.pok.hpc-ng.ibm.com,b0517.pok.hpc-ng.ibm.com
+# Specify the data snapshot storage directory.
+dataSnapshotStorageDirectory=/storage/sen/cross-dc-snapshot/CrossDataCenterFailoverSample/dc2
+#
+# For all the config values that appear below, you can leave them as it is unless you
+# really have a need to change them. In most cases, the default value below is sufficient.
+#
+# One time initial delay at the start of the application before the CrossDC toolkit goes to its real work.
+crossDCInitDelay=40.0
+#
+# Heartbeat gets exchanged across the data centers for every 30 seconds.
+######################################################################
+# To deactivate the RemoteDC failover completely, set this 
+# time interval to a very large value so that the heartbeat exchange will not 
+# trigger anytime soon.  Set it to 444444444.00 (This means once in 14 years).
+######################################################################
+heartbeatExchangeInterval=30.0
+# Data center failover will happen after four consecutive heartbeat misses i.e. after 120 seconds.
+consecutiveHeartbeatMissesAllowed=4
+# Periodic in-memory state data snapshot gets exchanged across 
+# the data centers to do the data replication for every 180 seconds.
+######################################################################
+# To deactivate the RemoteDC snapshot/replication completely, set this 
+# time interval to a very large value so that the data snapshot exchange will not 
+# trigger anytime soon.  Set it to 888888888.00 (This means once in 28 years).
+######################################################################
+dataSnapshotExchangeInterval=180.0
+# Specify whether you want to send the cross DC heartbeat and data snapshot messages to
+# all the machines you configured above.
+sendToAllRemoteMachines=false
+# Specify whether you want to log the HTTP errors all the time.
+alwaysLogHttpErrors=false
+# Specify the HTTP connection timeout in seconds.
+httpConnectionTimeout=25
+# Specify the HTTP read timeout in seconds.
+httpReadTimeout=100
+# Specify the need to retain the pre-existing data snapshot files during the data center startup. 
+retainOlderDataSnapshotsAtStartup=false
+# Specify the need to send the replicated data snapshots to their
+# origin DC in a rare case when both DCs go down simultaneously and
+# get started at the same time after that event.
+sendDataSnapshotsToOriginDCAtStartup=false

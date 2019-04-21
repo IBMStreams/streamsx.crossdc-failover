@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="ASCII"?>
+<functionModel
+  xmlns="http://www.ibm.com/xmlns/prod/streams/spl/function" 
+  xmlns:cmn="http://www.ibm.com/xmlns/prod/streams/spl/common" 
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+  xsi:schemaLocation="http://www.ibm.com/xmlns/prod/streams/spl/function functionModel.xsd"> 
+  <functionSet>
+    <headerFileName>Functions.h</headerFileName>
+    <cppNamespaceName>tuple_serializer_deserializer</cppNamespaceName>
+    <functions> 
+      <function>
+        <description>Serialize a given tuple to a blob</description>
+        <prototype><![CDATA[<tuple T> public void serializeTuple(T myTuple, mutable blob myBlob)]]></prototype>
+      </function>
+      
+      <function>
+        <description>Deserialize the blob into a tuple</description>
+        <prototype><![CDATA[<tuple T> public void deserializeTuple(mutable T myTuple, blob myBlob)]]></prototype>
+      </function>
+
+      <function>
+        <description>Serialize any given data item made of some SPL type into a blob</description>
+        <prototype><![CDATA[<any T> public void serializeDataItem(T myData, mutable blob myBlob)]]></prototype>
+      </function>
+      
+      <function>
+        <description>Deserialize a given blob into its original data item made of some SPL type</description>
+        <prototype><![CDATA[<any T> public void deserializeDataItem(mutable T myData, blob myBlob)]]></prototype>
+      </function>
+      
+      <function>
+        <description>Delete all the files in a directory with a given file extension</description>
+        <prototype><![CDATA[public int32 delete_files_in_a_directory(rstring directory, rstring extension)]]></prototype>
+      </function>
+
+      <function>
+        <description>Get a list of names of all the files in a directory with a given file extension</description>
+        <prototype><![CDATA[public int32 get_file_names_in_a_directory(rstring directory, rstring extension, mutable list<rstring> fileNamesList)]]></prototype>
+      </function>
+      
+      <function>
+        <description>Launch the given external application.</description>
+        <prototype><![CDATA[public int32 launch_app(rstring appName)]]></prototype>
+      </function>      
+    </functions> 
+    
+    <dependencies>
+       <library>
+          <cmn:description/>
+           <cmn:managedLibrary>
+              <cmn:includePath>../../impl/include</cmn:includePath>
+           </cmn:managedLibrary>
+       </library>
+    </dependencies>
+  </functionSet> 
+</functionModel> 

@@ -1,0 +1,435 @@
+============================================================
+First created on: October/10/2018
+Last modified on: April/21/2019
+
+Definition of the term 'Failover'
+---------------------------------
+English dictionary defines 'Failover' as shown below.
+
+"A method of protecting computer systems from failure, in which a 
+standby equipment automatically takes over when the main system fails."
+
+Wikipedia defines the same in a slightly elaborate manner as shown below.
+
+"In computing and related technologies such as networking, failover is 
+switching to a redundant or standby computer server, system, 
+hardware component or network upon the failure or abnormal termination of 
+the previously active application, server, system, hardware component, 
+or network. Failover and switchover are essentially the same operation, 
+except that failover is automatic and usually operates without warning, 
+while switchover requires human intervention."
+
+Purpose of this toolkit
+-----------------------
+This IBM Streams toolkit is designed to provide application-level failover across 
+two data centers. Two identical copies of a given Streams application running in 
+two data centers either in active/active or in active/passive mode can achieve 
+the failover a.k.a switchover when one of the data centers goes down. There is 
+also an optional feature to do a periodic replication of the application's 
+in-memory state across the two centers in order for a surviving data center to 
+take over the data replicated from the failed data center. In summary, this 
+toolkit serves the purpose of enabling a given IBM Streams application for 
+Disaster Recovery (DR) and Business Continuity (BC).
+
+Technical positioning of this toolkit
+-------------------------------------
+Large enterprise customers run their IBM Streams applications across multiple 
+data centers that are geographically separated. They do this for various 
+business-critical reasons such as load balancing, redundancy, resiliency, 
+high availability, operational continuity etc. Such customers invariably need 
+a way to protect their Streams applications from data center outages 
+(both planned and unplanned). During such data center outages, they want the 
+Streams applications to failover safely and gracefully to the data center that 
+is still active. 
+
+This generic and robust toolkit allows the customer applications to piggyback on
+it and achieve the cross data center failover capability. This toolkit is 
+implemented using the code artifacts written in SPL/Java/C++. It provides simple 
+hooks via SPL composite operators and Stream connections for any application to 
+seamlessly achieve the following:
+
+1) Get notified about the UP or DOWN status of the application running in the remote DC.
+
+2) Optionally and periodically replicate the in-memory state of any custom-written 
+operator in an application graph to the remote DC.
+
+3) When the application running in the remote DC becomes inactive, take over its 
+operation by owning its in-memory state that was replicated regularly at the local DC.
+
+It is important to think of the three activities mentioned above happening bidirectionally
+in the local DC as well as in the remote DC under normal working conditions. This toolkit 
+provides three different examples that are easy to understand. They showcase a closer to 
+real-life scenario with clear directions to demonstrate the local DC/remote DC setup with 
+data replication, abrupt failure of any DC and the operational continuity at the surviving DC.
+
+Salient features of this toolkit
+--------------------------------
+It provides the following salient features to address the needs of 
+DR (Disaster Recovery) and BC (Business Continuity).
+
+1) It allows two copies of a given Streams application to run in two data centers as 
+active(DC1)/active(DC2) or active(DC1)/passive(DC2) or passive(DC1)/active(DC2). 
+
+2) When an active DC fails, it makes the other DC failover a.k.a switchover to 
+continue the application functions using the surviving second copy.
+
+3) Optionally, it also does the periodic replication of the Streams application's 
+in-memory operator state across two data centers. It will do bidirectional 
+replication in active/active mode and unidirectional replication when one DC is 
+active and the other DC is passive. When an active DC goes down, it will make the 
+other DC's application restore the data replicated from the failed remote DC into 
+its own in-memory state. This optional crossdc data replication and restoration 
+feature expects two identical copies of a given application i.e. exactly the same 
+application topology to run in both data centers.
+
+Major dependency for this toolkit
+---------------------------------
+To communicate between the data centers, this toolkit uses the
+HTTPBlobInjection operator present in the streamsx.inetserver toolkit.
+So, there is a dependency on the inetserver toolkit.
+
+Other requirements for this toolkit
+-----------------------------------
+1. Any IBM Streams application interested in using this toolkit should be 
+prepared to invoke an SPL composite operator available in this toolkit and
+complete the input and output stream requirements of that composite operator.
+Application logic will have to call one or more native functions provided by 
+this toolkit in order to perform the periodic data replication between 
+data centers. In summary, application logic will be required to properly 
+integrate with the composite operator provided by this toolkit.
+   
+2. In order for this toolkit to work properly, there should be network 
+connectivity available between the two data centers. This toolkit will 
+open HTTP connections between the two data centers with a user specified 
+HTTP port number. So, there should be no firewall blocking this 
+HTTP communication in both data centers.
+
+3. If the cross DC data replication option is enabled, then the replicated 
+data will be stored in disk in both the data centers. This will require a 
+shared/mapped drive either via NFS or NAS that can be accessed from all the 
+IBM Streams application machines in a given data center. Depending on the 
+size of the in-memory state held by the application logic, the total size of 
+the shared drive in each data center should be planned ahead of time and
+provisioned properly.
+
+Building the streamsx.crossdc-failover toolkit
+----------------------------------------------
+After downloading this toolkit from the IBMStreams GitHub, unzip it in your 
+development machine. Then, follow these simple steps to build it.
+
+cd   streamsx.crossdc-failover/com.ibm.streamsx.crossdc-failover
+make
+
+NOTE: On your development machine, you have to ensure that you have
+installed the Apache Ant tool which is required to build this toolkit.
+
+Learning to use this toolkit through examples
+---------------------------------------------
+There are three examples shipped with this toolkit that can show the
+users of this toolkit about ways to achieve crossdc failover in their
+own applications either in active/active or in active/passive manner.
+
+streamsx.crossdc-failover/samples/CrossDataCenterFailoverSample is an
+example that shows how to integrate with the crossdc-faiover toolkit when
+the application doesn't use the IBM Streams consistent region feature.
+
+streamsx.crossdc-failover/samples/CrossDataCenterFailoverCRSample is an
+example that shows how to integrate with the crossdc-faiover toolkit when
+the application uses the IBM Streams consistent region feature.
+
+streamsx.crossdc-failover/samples/CrossDataCenterFailoverPassiveSample is an
+example that shows how to integrate with the crossdc-faiover toolkit when
+we want to run one of the two examples shown above in a DC in active mode and 
+then monitor that remote DC passively from the second DC in order to 
+failover when the remote DC encounters a failure or an outage.
+
+All the three examples contain plenty of code commentary to help in 
+understanding the steps needed to integrate with the streamsx.crossdc-failover toolkit.
+Since the concepts are somewhat advanced in nature, you are encouraged to
+do your own detailed study of how these examples work. Alternatively, you can 
+ask an IBM Streams specialist to explain how these examples are put together to
+work across two data centers in a fail-safe manner. 
+
+These three examples can be built by simply typing make from within their
+respective directory location. Please refer to the discussion above where we talked
+about the dependency on the streamsx.inetserver toolkit. The Makefile provided with
+each of these examples has a reference to the inetserver toolkit location which 
+must be set to your correct directory before building these examples. When you
+want to use the streamsx.crossdc-failover toolkit in your own application, you also
+have to take care of adjusting your Makefile to point to the correct inetserver location.
+
+Example usage of this toolkit inside a Streams application
+----------------------------------------------------------
+Here is a code snippet that shows how to invoke the CrossDCFailover composite 
+operator available in this toolkit from within an IBM Streams application:
+
+use com.ibm.streamsx.crossdc.failover.types::*;
+use com.ibm.streamsx.crossdc.failover::*;
+
+// ===== Start of integrating with the CrossDCFailover Composite =====
+// Any application that wants to make use of the
+// CrossDataCenterFailover technique explained above must
+// invoke the following reusable composite.
+(stream<HeartbeatMessageType> DataSnapshotSignal;
+ stream<RemoteDataCenterStatusType> RemoteDataCenterStatus;
+ stream<HeartbeatMessageType> ProcessDataFromRemoteDC) as CrossDCFailover = 
+ CrossDataCenterFailover(SerializedDataSnapshotMessage; SpecialMessage) {
+    param
+       configFileName: $configFileName;	 
+}
+
+// As you can see above, the CrossDCFailover composite has its own
+// input streams and output streams all of which will be used by one or 
+// more operators in this application.	
+//
+// At this point, application code can consume the tuples coming via the
+// output streams of the CrossDCFailover layer and application code feed
+// into the input streams of the CrossDCFailover layer as needed.
+//
+// ===== End of integrating with the CrossDCFailover Composite =====		
+
+Following are the output streams available from the CrossDCFailover 
+composite operator to the application logic.
+
+DataSnapshotSignal: If the optional periodic data replication is enabled, then
+the application logic will be notified via this stream whenever it is time for
+the application logic to create a snapshot of its in-memory state data to be 
+replicated to the remote DC.
+
+RemoteDataCenterStatus: This stream notifies the application logic about any
+status change happening in the remote DC i.e. when a remote DC comes up active or
+when a remote DC goes down.
+
+ProcessDataFromRemoteDC: When a remote DC failure or outage is detected and if the
+optional cross DC data replication is ON, then this stream will provide the
+application logic with a serialized blob representing the replicated in-memory
+state from the failed remote DC. This blob will carry an application specific
+origin of this data so that the corresponding operator in the local DC's 
+application can deserialize the blob and take over that data.
+
+Following are the input streams into the CrossDCFailover composite operator for which
+the application logic is responsible for.
+
+SerializedDataSnapshotMessage: In response to the periodic cross DC data replication
+notification from the CrossDCFailover composite operator, application logic can
+serialize its in-memory state into a blob and feed it into this input stream.
+
+SpecialMessage: Application logic can send special messages into the CrossDCFailover 
+composite operator via this input stream when needed. This stream has a single rstring 
+attribute. Following are the valid values for this attribute:
+
+OrderlyShutdown
+SendMeDataFromSnapshotFiles
+
+Meaning for these special messages is discussed in another section below.
+
+The CrossDCFailover composite takes one parameter through which users can specify the 
+fully qualified name for a text based configuration file. If configuration for 
+the CrossDCFailover composite is done via the IBM Streams app config facility, 
+then users can pass an empty string i.e. "" as a value for this parameter. A separate 
+section below covers more details about configuring the CrossDCFailover composite.
+
+Running the examples in active/active mode
+------------------------------------------
+As mentioned above, there is plenty of commentary available in the example projects.
+Instead of repeating it here, please open any of the SPL source file in the first two
+examples mentioned above and follow the detailed directions found in that file to run it.
+
+We show here the streamtool commands to run two identical copies of 
+an application in active/active mode.
+
+st  submitjob  -d  <YOUR_DC1_STREAMS_DOMAIN>  -i  <YOUR_DC1_STREAMS_INSTANCE>  output/com.ibm.streamsx.crossdc.failover.sample.CrossDataCenterFailoverSample.sab -P configFileName=<YOUR_DC1_CROSSDC_CONFIG_FILE> -C tracing=info
+
+st  submitjob  -d  <YOUR_DC2_STREAMS_DOMAIN>  -i  <YOUR_DC2_STREAMS_INSTANCE>  output/com.ibm.streamsx.crossdc.failover.sample.CrossDataCenterFailoverSample.sab -P configFileName=<YOUR_DC2_CROSSDC_CONFIG_FILE> -C tracing=info
+
+Running the examples in active/passive mode
+-------------------------------------------
+Please follow the detailed directions available in the CrossDataCenterFailoverPassiveSample.spl
+file to run it.
+
+We show here the streamtool command to run one of the first two examples in active mode and
+the the third example as a standalone in passive mode.
+
+st  submitjob  -d  <YOUR_DC1_STREAMS_DOMAIN>  -i  <YOUR_DC1_STREAMS_INSTANCE>  output/com.ibm.streamsx.crossdc.failover.sample.CrossDataCenterFailoverSample.sab -P configFileName=<YOUR_DC1_CROSSDC_CONFIG_FILE> -C tracing=info
+
+
+cd   streamsx.crossdc-failover/samples/CrossDataCenterFailoverPassiveSample/output/bin
+./standalone configFileName=<YOUR_DC2_CROSSDC_PASSIVE_CONFIG_FILE> shellScriptName=<YOUR_DC2_CROSSDC_FAILOVER_SHELL_SCRIPT>
+
+Cross DC Failover configuration
+-------------------------------
+Every application integrating with the streamsx.crossdc-failover toolkit can do a very
+fine-grained configuration of how it wants to achieve failover. Cross DC configuration
+is done via a set of configuration names and their values in the key=value format.
+Such a configuration can be done either in the IBM Streams app config facility or in a 
+text based config file or both. When the Cross DC configuration is done via both methods,
+then the text file based configuration will take precedence over the app config based one.
+
+When done via the app config facility, there should be a app config named CrossDCFailover at
+the Streams instance level. Within that app config, every application should have its 
+set of configuration key=value pairs in this format:
+
+namespace::MainCompositeName_key=value
+
+e-g: com.acme.test::MyTest1_localDataCenterName=dc1
+
+Alternatively, every application can also decide to have its CrossDC configuration
+specified via its own text based file (e-g: my-dc1-crossdc-config.txt).
+
+Following configuration key=value pairs must exist for every application. A typical
+text file based CrossDC configuration for a given application will look as shown below.
+
+# Specify a name for this local data center.
+localDataCenterName=dc1
+# Specify the operation mode for this local data center: 0 for passive, 1 for active
+crossDCOperationMode=1
+# Specify the HTTP port number you want to use for the Cross DC Http Receiver.
+crossDCHttpPort=25091
+#
+# In the property below, you can either give a single or multiple Streams application machine name(s) or
+# the IP addresses of those machines that are used in the remote Data Center dc2. 
+# If you have multiple machines, separate them by a comma: Machine1,Machine2,Machine3
+remoteDataCenterApplicationMachineNames=d0702.pok.hpc-ng.ibm.com,b0517.pok.hpc-ng.ibm.com
+# Specify the data snapshot storage directory.
+dataSnapshotStorageDirectory=/storage/sen/cross-dc-snapshot/CrossDataCenterFailoverSample/dc2
+#
+# For all the config values that appear below, you can leave them as it is unless you
+# really have a need to change them. In most cases, the default value below is sufficient.
+#
+# One time initial delay at the start of the application before the CrossDC toolkit goes to its real work.
+crossDCInitDelay=40.0
+#
+# Heartbeat gets exchanged across the data centers for every 30 seconds.
+######################################################################
+# To deactivate the RemoteDC failover completely, set this 
+# time interval to a very large value so that the heartbeat exchange will not 
+# trigger anytime soon.  Set it to 444444444.00 (This means once in 14 years).
+######################################################################
+heartbeatExchangeInterval=30.0
+# Data center failover will happen after four consecutive heartbeat misses i.e. after 120 seconds.
+consecutiveHeartbeatMissesAllowed=4
+# Periodic in-memory state data snapshot gets exchanged across 
+# the data centers to do the data replication for every 180 seconds.
+######################################################################
+# To deactivate the RemoteDC snapshot/replication completely, set this 
+# time interval to a very large value so that the data snapshot exchange will not 
+# trigger anytime soon.  Set it to 888888888.00 (This means once in 28 years).
+######################################################################
+dataSnapshotExchangeInterval=180.0
+# Specify whether you want to send the cross DC heartbeat and data snapshot messages to
+# all the machines you configured above.
+sendToAllRemoteMachines=false
+# Specify whether you want to log the HTTP errors all the time.
+alwaysLogHttpErrors=false
+# Specify the HTTP connection timeout in seconds.
+httpConnectionTimeout=25
+# Specify the HTTP read timeout in seconds.
+httpReadTimeout=100
+# Specify the need to retain the pre-existing data snapshot files during the data center startup. 
+retainOlderDataSnapshotsAtStartup=false
+# Specify the need to send the replicated data snapshots to their
+# origin DC in a rare case when both DCs go down simultaneously and
+# get started at the same time after that event.
+sendDataSnapshotsToOriginDCAtStartup=false
+
+Please note that in a text file based configuration, there is no need to prefix the
+individual key=value pair with the namespace::MainCompositeName_. However, that prefix is
+a must when configuration is done in the IBM Streams app config named CrossDCFailover.
+
+For the remoteDataCenterApplicationMachineNames configuration setting, it is required to
+give all the application machine names in the remote DC that can potentially run the 
+operators/PEs belonging to a given Streams application. 
+
+It is encouraged that the users take a copy of these reference files and
+modify it to suit their needs.
+
+streamsx.crossdc-failover/com.ibm.streamsx.crossdc-failover/etc/make-crossdc-appconfig.sh
+streamsx.crossdc-failover/com.ibm.streamsx.crossdc-failover/etc/crossdc-config.txt
+
+Failover in a passive mode data center
+--------------------------------------
+When one DC goes down in an active/active configuration, failover will happen
+automatically in the other DC's already active copy of that same application.
+However, in an active/passive configuration, the passive mode data center is
+only monitoring the health of the remote active DC. When that remote active DC
+fails, then passive side should detect the failure and start the real application.
+This task can be automated via a shell script.
+
+The CrossDataCenterFailoverPassiveSample application we discussed earlier does 
+exactly that. It does it by calling a launch_app native function provided by
+the streamsx.crossdc_failover toolkit to launch a shell script which in turn
+will start the required application in the DC that is failing over. Please refer to
+that example application to learn more.
+
+It is encouraged that the users take a copy of this reference shell script and
+modify it to suit their needs.
+
+streamsx.crossdc-failover/com.ibm.streamsx.crossdc-failover/etc/crossdc-failover.sh
+
+streamsx.crossdc-failover Special Messages
+------------------------------------------
+As explained in an earlier section, application logic can send certain 
+special messages into the CrossDCFailover composite operator. You can refer to the
+example applications to learn more.
+
+OrderlyShutdown: When a given DC's application requires a planned orderly shutdown,
+then this activity can be informed to the remote DC to anticipate a normal outage thereby
+avoiding any accidental failover operation. In this case, the application logic can
+send this special message to the CrossDCFailover composite operator.
+
+SendMeDataFromSnapshotFiles: During the application start-up time, if the application
+wants to inherit the remote DC's replicated data that was received during the 
+previous application run, then it can send this special message to the CrossDCFailover
+composite which will start sending the previously replicated data. During the application
+start-up, by default remote DC's replicated data from a previous run is deleted.
+So, this special message has to work in conjunction with a CrossDC configuration
+named retainOlderDataSnapshotsAtStartup. You can ask an IBM Streams specialist about 
+how it works if you will ever have a need to use this feature.
+
+Useful CrossDC native functions
+-------------------------------
+In order to send the in-memory state for cross DC replication, application logic
+can call these native functions to serialize the in-memory state into a blob or
+deserialize a blob into the original data item.
+
+serializeDataItem
+deserializeDataItem
+serializeTuple
+deserializeTuple
+
+In a passive mode standalone monitoring application, following function is
+available for use to launch a shell script to start the real Streams application
+in order to do the failover.
+
+launch_app
+
+Please refer to the example applications provided in this toolkit to 
+learn about how to use these functions.
+
+A rare case when both the DCs go down at the same time
+------------------------------------------------------
+In an extremely rare case, if both the data centers went down exactly at the
+same time, we will end up in a situation where DC1 will have the last known
+replicated data snapshots for DC2 and vice versa. In this case, we can optionally
+(based on user request) send such replicated data snapshots to their respective
+data centers where they originally came from. Users can indicate this preference  
+via this configuration setting: sendDataSnapshotsToOriginDCAtStartup=true
+
+After both data centers have been brought up correctly, users can either delete 
+this configuration setting belonging to each DC or simply set it to false.
+
+Scaling this toolkit to work with a larger application topology
+---------------------------------------------------------------
+A larger application topology running with many operators on a Linux cluster
+with many machines will require an equivalent level of scaling done at the
+CrossDCFailover composite layer. Since the crossdc-failover communicates
+via HTTP with the remote DC, it needs more HTTP sender/receiver pairs to
+handle the load from a larger application topology. By default, there is 
+only one pair of sender/receiver. So, users can assign a required number of
+HTTP sender/receiver pairs by using the submission time parameter called 
+numberOfHttpSenderReceiverPairs at the time starting up their application. 
+
+Official documentation for this toolkit
+---------------------------------------
+https://ibmstreams.github.io/streamsx.crossdc-failover/
+============================================================

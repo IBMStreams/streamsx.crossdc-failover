@@ -1,0 +1,232 @@
+/*
+===================================================
+# Licensed Materials - Property of IBM
+# Copyright IBM Corp. 2018, 2019
+# US Government Users Restricted Rights - Use, duplication or
+# disclosure restricted by GSA ADP Schedule Contract with
+# IBM Corp.
+===================================================
+*/
+/*
+===================================================
+First created on: Oct/08/2018
+Last modified on: Apr/21/2019
+
+This file contains the reusable types and SPL functions 
+used in the Cross Data Center Failover composite as well as
+in the external applications that have a dependency on 
+that composite. In addition, this streamsx.crossdc-failover
+toolkit also has C++ native functions in the impl/include directory.
+It also has a custom Java operator in the 
+impl/java/src directory.
+===================================================
+*/
+namespace com.ibm.streamsx.crossdc.failover.types;
+
+use spl.file::*;
+
+// =======================================================
+// Define the stream schema a.k.a types here.
+type HearbeatSignalType = boolean signal;
+
+// Description of the attributes present in the following stream schema:
+//
+// heartbeatMsgType -->   It tells the type of the heartbeat message.
+//                        1  for a regular heartbeat message (with no snapshot data)
+
+//                        2  for a heartbeat message with snapshot data
+
+//                        3  Orderly shutdown of the remote data center will happen shortly.
+//                           So, it is not an abrupt remote DC failure.
+//                           In this case, there is no remote Data Center operational take-over needed.
+//                           So, delete the remote DC's replicated snapshot data.
+//                           Then, mark the remote DC status as DOWN.
+//                           If there is ever a need to do this, the external application logic can
+//                           prepare a message with this message type and send it to the other DC just before
+//                           the local DC is going to be shutdown in an orderly manner.
+
+//                        4  In a rare case, both local and remote data centers can go down for
+//                           some unexpected reasons one after the other in a short time span. 
+//                           If this happens, we will be left with each data center holding the
+//                           replicated state of the other. When both data centers come up after this
+//                           rare simultaneous failure of both data centers, users can create an appconfig
+//                           named sendDataSnapshotsToOriginDCAtStartup=true. This option will ensure that
+//                           the replicated data snapshots will be sent back to their origin DC to
+//                           restore their original state inside of the appropriate operators.
+//                           For such message transfers, heartbeatMsgType attribute will carry this value of 4.
+//                           After both data centers have been brought up correctly, users can either 
+//                           delete this appconfig setting or set it to false.
+//
+// heartbeatCnt -->       It tells the running total of the 
+//                        heartbeat messages that have been sent out from 
+//                        a local data center to a remote data center.
+//
+// dataCenterOrigin -->   It tells the name of the data center from where
+//                        this heartbeat message is originating.
+//
+// dataSnapshot -->       If it is a non-zero size blob, then it contains a
+//                        serialized tuple that is purely external application specific.
+//                        It may represent the in-memory state data or some other
+//                        business logic data that this local data center wants to
+//                        replicate to the remote data center via this heartbeat message.
+//
+// dataSnapshotOrigin --> It is an external application-specific arbitrary string that
+//                        can uniquely identify which part of the external application serialized 
+//                        its internal tuple into a binary data snapshot to be sent to the
+//                        remote data center for replication. For example, this string
+//                        could be an operator name or a parallel channel number in a 
+//                        UDP region or a combination of both or totally something else.
+//
+type HeartbeatMessageType = uint32 heartbeatMsgType, uint64 heartbeatCnt, 
+	rstring dataCenterOrigin, blob dataSnapshot, rstring dataSnapshotOrigin;
+
+type BinaryPayloadType = blob binaryPayload;
+
+type RemoteDataCenterStatusType = boolean activeOrInactive;
+
+type HttpResponseType = int32 responseCode, rstring responseMessage;
+
+type HttpBinaryPayloadType = BinaryPayloadType, tuple<map<rstring, rstring> httpRequestHeaders>;
+
+type SpecialMessageType = rstring msg;
+// =======================================================
+// Define the SPL functions here.
+// This function writes any given binary data into a specified file.
+public stateful int32 writeBinaryDataToFile(blob binaryData, rstring fileName) {
+	// Refer to this URL which shows a list of all the Linux error codes that
+	// will get returned in this variable while encountering file related errors.
+	// https://www.thegeekstuff.com/2010/10/linux-error-codes
+	mutable int32 fileError = 0;
+	mutable int32 tmpFileError = 0;
+	mutable uint64 fileHandle = 0ul;
+	// Create an empty file (with the w+ file mode) and open it for read/write.
+	// If a file with the same name already exists, its contents are discarded and
+	// that file is treated as a new empty file. 
+	fileHandle = fopen(fileName, "w+", fileError);
+						
+	if (fileError != 0) {
+		// Error in creating or opening the file.
+		return (fileError);
+	}
+						
+	// Write the binary content to the file. 
+	fwrite((list<uint8>)binaryData, fileHandle, 0ul, 
+		(uint64)blobSize(binaryData), fileError);
+	
+	if (fileError != 0) {
+		// Error in writing to the file.
+		fclose(fileHandle, tmpFileError);
+		// Remove this file since the write failed.
+		remove(fileName, tmpFileError);
+		return(fileError);
+	}
+	
+	fclose(fileHandle, fileError);
+	return (0);
+}
+
+// This function reads the binary data from a specified file into the
+// blob data structure passed here as a function argument.
+public stateful int32 readBinaryDataFromFile(mutable blob binaryData, rstring fileName) {
+	mutable uint64 fh = 0ul;
+	// Refer to this URL which shows a list of all the Linux error codes that
+	// will get returned in this variable while encountering file related errors.
+	// https://www.thegeekstuff.com/2010/10/linux-error-codes
+	mutable int32 err = 0;
+	mutable int32 tmpError = 0;
+	
+	// Read the given binary file.
+	fh = fopen(fileName, "rb", err);
+
+	if (err != 0) {
+		return(err);
+	}
+
+	// Read the entire file into a blob as binary data.
+	freadfile(binaryData, fh, err);
+
+	if (err != 0) {
+		// File read error.
+		fclose(fh, tmpError);
+		return(err);
+	}
+		
+	// We are done reading the binary data from the specified file.
+	fclose(fh, err);
+	return(0);
+}
+
+// This function will substitute the parallel channel number in the 
+// place where a * appears in the URL passed to this function.
+// e-g: "/crossdcrx/CrossDataCenterReceiver[*]/ports/output/0/inject"
+public rstring getUrlEmbeddedWithParallelChannel(rstring url, int32 channelNumber) {
+	mutable list<rstring> myList = [];
+	tokenize(url, "*", false, false, myList);
+					
+	if (size(myList) > 1) {
+		rstring changedURL = myList[0] + (rstring)channelNumber + myList[1];
+		appTrc(Trace.info, "Changed URL=" + changedURL);
+		return(changedURL);
+	} else {
+		// Return the original URL since no * was found.
+		return(url);
+	}
+}
+
+// This function will try to read and return the value for a 
+// given key from a given file. It will ignore any line 
+// starting with # which is a comment line.
+// If it can't read the value for any reason, it will return the
+// default value passed to this function by the caller.
+public stateful rstring readValueFromConfigFile(rstring fileName, rstring key, rstring defaultValue) {
+	// Open the user-specified file.
+	mutable uint64 fileHandle = 0ul;
+	mutable int32 errorCode = 0;
+	mutable rstring line = "";
+	mutable rstring value = defaultValue;
+
+	if (fileName == "") {
+		// Filename is empty.
+		return(value);
+	}
+
+	fileHandle = fopen (fileName, "r", errorCode);
+	
+	// Handle file open errors.
+	if (errorCode != 0) {
+		return(value);
+	}
+	
+	// Stay in a loop and keep reading the lines from the given file.
+	while(true) {
+		line = freadLine (fileHandle, errorCode);
+
+		if (errorCode == -1) {
+			// EOF
+			break;
+		}
+
+		// Handle file read errors.
+		if (errorCode != 0) {
+			break;
+		}
+		
+		line = trim(line, " ");
+		// If it is an empty line or a comment line, skip it.
+		if (length(line) <= 0 || line[0] == '#') {
+			continue;
+		}
+		
+		// Split the line read from the file into string tokens.
+		list<rstring> tokens =  tokenize (line, "=", false);
+		
+		if (size(tokens) == 2 && trim(tokens[0], " ") == key) {
+			value = trim(tokens[1], " ");
+			break;
+		}
+	} // End of while loop
+
+	fclose(fileHandle, errorCode);
+	return(value);
+}
+// =======================================================

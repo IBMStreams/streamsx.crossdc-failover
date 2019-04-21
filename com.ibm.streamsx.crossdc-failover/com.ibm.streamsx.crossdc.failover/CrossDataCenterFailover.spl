@@ -1,0 +1,1244 @@
+/*
+===================================================
+# Licensed Materials - Property of IBM
+# Copyright IBM Corp. 2018, 2019
+# US Government Users Restricted Rights - Use, duplication or
+# disclosure restricted by GSA ADP Schedule Contract with
+# IBM Corp.
+===================================================
+*/
+/*
+===================================================
+First created on: Oct/06/2018
+Last modified on: Apr/19/2019
+
+This IBM Streams SPL composite contains the logic
+required to do the cross data center failover.
+This non-main composite is part of the 
+streamsx.crossdc-failover toolkit. It forms the
+crux for providing cross data center fail-over for a 
+given Streams application.
+It provides a fairly generic framework for detecting
+planned or unplanned data center outages and 
+allowing the surviving data center to continue
+the operational responsibilities of the data center that
+went down a few moments earlier. To achieve that goal, 
+it performs the following major tasks.
+
+1) It exchanges periodic heartbeat messages
+with the configured remote data center.
+
+2) During the hearbeat exchange process, it looks out 
+for the prolonged heartbeat misses from the remote 
+data center so as to plan for the operational
+failover (or switchover) to the surviving data center.
+
+3) It notifies the external application logic whenever a 
+remote data center's status transition occurs from being 
+DOWN to UP or UP to DOWN.
+
+4) It also (optionally) exchanges the application-specific
+in-memory data snapshot with the remote data center. This
+snapshot will ensure that any in-flight in-memory state data
+kept at the failed data center to get processed by the
+other surviving data center. In essence, it does the  
+cross data center replication of the in-memory state 
+maintained by the external applications. 
+This data replication is needed for the 
+operational continuity when one of the data centers 
+goes down in a planned or unplanned manner. This composite
+provides a data agnostic mechanism for the external
+applications to exchange (replicate) their proprietary data 
+across the data centers.
+
+5) Upon detecting a remote data center failure or inactivity, 
+it signals the external application logic to take over the 
+remote data center's replicated data snapshot and 
+apply the necessary processing/application logic to that data.
+
+6) Details discussed above are for two data centers working in
+active-active mode i.e. two copies of the same application
+actively processing data in both DCs. This toolkit can also be
+used for active-passive (or active-standby) mode in which
+one DC is actively processing data and the other DC is simply
+running some code similar to this toolkit's test driver code  
+as a standalone application with the second copy of the 
+real application not at all running. In this case, this stub
+application running in standalone mode will ignore any
+data snapshot signals. Whenever it gets a notification about
+the remote active DC failure, this stub application will
+simply launch a shell script to do "streamtool submitjob" of the
+actual application in distributed mode. At that point, the
+standalone stub application code can be stopped either within
+that shell script or by some other means.
+(Please refer to a sample project in this toolkit directory named 
+ CrossDataCenterFailoverPassiveSample.)
+
+Any application that wants to make use of this
+cross data center failover technique has to do the following.
+
+a) It must make this SPL project as a dependency so that
+it can use the composite defined here to do the
+cross data center failover. This dependency can be added via
+the option available in the Streams Studio project explorer view (OR)
+by adding this Streams compiler option in your application's Makefile: 
+-t <Full path to the crossdc-failover toolkit)
+
+b) It must hook with this composite in this project via
+the appropriate input and output streams to 
+enable the failover option between the two data centers.
+A given external application must also ensure that the
+composite parameters specified below are configured
+correctly in the Streams app config facility. 
+
+c) Also note that there are four C++ native functions
+named serializeTuple to serialize a tuple into binary payload,  
+deserializeTuple to deserialize a given blob into a tuple, 
+serializeDataItem to serialize any data item made of 
+any SPL type into a blob and deserializeDataItem to deserialize a
+given blob into its original data item made of any SPL type.  
+Those native functions also need to be used within 
+the external applications wanting to make use of this
+cross data center failover technique.
+[Look inside the impl/include/Functions.h and 
+in the com.ibm.crossdc.failover/native.function/function.xml
+files for the C++ code and the XML function model respectively.]
+
+d) There is also a custom Java operator (HttpBlobSender) in
+this project which is mainly used within this composite.
+It will not be directly used by the other 
+external applications making use of this composite.
+But, it is necessary to understand how that operator works.
+
+A proposal to make this facility as part of the IBMStreams GitHub can be found here:
+https://github.com/IBMStreams/administration/issues/138
+===================================================
+*/
+namespace com.ibm.streamsx.crossdc.failover;
+
+use com.ibm.streamsx.crossdc.failover.types::*;
+use spl.file::*;
+// streamsx.inet toolkit version 2.9.6 or later will be required.
+use com.ibm.streamsx.inet.rest::*;
+
+// This non-main composite accepts two incoming streams:
+// 1) A serialized data snapshot message.
+// 2) A string based message that can convey any special needs or requests as part of
+//    the supported cross data center failover operations.
+//
+// It produces three different output streams:
+// 1) A signal to applications using this toolkit to prepare and send their data snapshots to remote DC.
+// 2) A status report to external applications using this toolkit about the status change that
+//    happened in a remote DC (whether it came up alive just now or webt down just now etc.)
+// 3) A data tuple received earlier from the Remote DC that needs to be taken over and
+//    processed by the Local DC due to the detected failure of the Remote DC. 
+public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, SpecialMessage; 
+	output DataSnapshotSignal, RemoteDataCenterStatus, ProcessDataFromRemoteDC) {
+	param
+		// These are the parameters needed for this reusable composite.
+		// They can either be obtained from the job submission time values or
+		// from the Streams app config facility. In this case, we are going to
+		// get it mostly from the Streams app config facility with default values.
+		//
+		// All the Cross DC related appconfig properties must be prefixed with
+		// a specific Streams application name as shown below. This will help
+		// different applications running in the same Streams instance to
+		// have their own Cross DC properties in the app config.
+		// namespace::MainCompositeName_localDataCenterName
+		// e-g: com.acme.test::MyTest1_localDataCenterName
+		// What is the local data center name? (any user specified value is fine.)
+		expression<rstring> $localDataCenterName : 
+			getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_localDataCenterName", "dc1");
+		// What is the operation mode for the local data center?
+		expression<int32> $crossDCOperationMode :
+			(int32)getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_crossDCOperationMode", "1");
+		// What is the Cross DC Http Port to be used?
+		expression<int32> $crossDCHttpPort :
+			(int32)getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_crossDCHttpPort", "25091");
+		// You can either give a single or multiple Streams application machine name(s) or
+		// the IP addresses of those machines that are used in the remote Data Center. 
+		// If you have multiple machines, separate them by a comma: "Machine1,Machine2,Machine3".
+		expression<rstring> $remoteDataCenterApplicationMachineNames :
+			getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_remoteDataCenterApplicationMachineNames", "localhost");
+		// One time initial delay at the start of the application before CrossDC goes to its real work.
+		expression<float64> $crossDCInitDelay :
+			(float64)getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_crossDCInitDelay", "40.00");
+		// Heartbeat exchange interval in seconds.
+		// *********************************************************
+		// To deactivate the RemoteDC failover completely, set this 
+		// time interval to a very large value so that the heartbeat exchange will not 
+		// trigger anytime soon. Set it to 444444444.00  (This means once in 14 years).
+		// *********************************************************
+		expression<float64> $heartbeatExchangeInterval : 
+			(float64)getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_heartbeatExchangeInterval", "444444444.00");
+		// If these many heartbeat signals are not received consecutively, 
+		// we will assume that the remote data center has failed.
+		expression<uint8> $consecutiveHeartbeatMissesAllowed :
+			(uint8)getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_consecutiveHeartbeatMissesAllowed", "4");
+		// External application specific in-memory data snapshot exchange interval in seconds.
+		// To make the logic simple, make it a round multiple of the heartbeat exchange interval.
+		// *********************************************************
+		// To deactivate the RemoteDC snapshot/replication completely, set this 
+		// time interval to a very large value so that the data snapshot exchange will not 
+		// trigger anytime soon. Set it to 888888888.00  (This means once in 28 years).
+		// *********************************************************
+		expression<float64> $dataSnapshotExchangeInterval : 
+			(float64)getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_dataSnapshotExchangeInterval", "888888888.00");
+		expression<rstring> $dataSnapshotStorageDirectory : 
+			getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_dataSnapshotStorageDirectory", "/tmp/cross-dc-snapshot");
+		expression<boolean> $sendToAllRemoteMachines :
+			(boolean)getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_sendToAllRemoteMachines", "false");
+		expression<boolean> $alwaysLogHttpErrors :
+			(boolean)getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_alwaysLogHttpErrors", "false");
+		expression<int32> $httpConnectionTimeout :
+			(int32)getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_httpConnectionTimeout", "25");	
+		expression<int32> $httpReadTimeout :
+			(int32)getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_httpReadTimeout", "100");		
+		/*	
+		// This constant can't be used in @parallel since it involves the appconfig API.
+		// It gives the following compiler error.
+		// CDISP0821E ERROR: The value of the width parameter specified in the 
+		// parallel annotation is not valid.
+		// Until it is fixed in future release of Streams, we must use the submission time value approach.
+		expression<int32> $numberOfHttpSenderReceiverPairs :
+			(int32)getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_numberOfHttpSenderReceiverPairs", "1");
+		*/
+		
+		// Specify the number of Http sender and receive pairs you want between the two DCs.
+		// If the user specifies a value higher than 1, consecutive Http port numbers will be used for
+		// every pair starting with the HTTP port number configured in the app config.
+		expression<int32> $numberOfHttpSenderReceiverPairs :
+			(int32)getSubmissionTimeValue("numberOfHttpSenderReceiverPairs", "1");		
+
+		// We will have a separate URL path for the dedicated heartbeat receiver which is not
+		// part of any parallel region. This is a fixed constant and can't be configured from an
+		// external app config or config file.
+		expression<rstring> $remoteDataCenterUrlPathForHeartbeatReceiver : 
+			"/crossdcrx/CrossDataCenterReceiverForHB/ports/output/0/inject";
+
+		// We will replace the * in this URL with the appropriate parallel channel number wherever this string gets used.
+		// This is a fixed constant and can't be configured from an external app config or config file.
+		expression<rstring> $remoteDataCenterUrlPath : "/crossdcrx/CrossDataCenterReceiver[*]/ports/output/0/inject";
+
+		// At the time of starting up the local DC, if there is a need to 
+		// retain the data stored in an existing set of old snapshot files 
+		// (received from the remote DC earlier), the following setting in the appconfig
+		// belonging to the local DC can be set to true. Default is false. For this feature
+		// to work, a copy of the old snapshot files received from the remote DC must be
+		// present in the snapshot directory configured in the local DC.
+		// If this app config setting is true when the local DC starts up, it will
+		// not delete the old snapshot files. After the external application's
+		// operators are completely started, user can send a special message called 
+		// SendMeDataFromSnapshotFiles into the CrossDataCenterFailover. On receiving that
+		// user initiated message, it will read the data from those snapshot files and 
+		// send them to the external application's operators for processing. 
+		// After sending the data, it will delete those old snapshot files. When this 
+		// feature is no longer desired, this app config setting can be changed to false.
+		expression<boolean> $retainOlderDataSnapshotsAtStartup :
+			(boolean)getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_retainOlderDataSnapshotsAtStartup", "false");
+		
+		// In an extremely rare case, if both the data centers went down exactly at the
+		// same time, we will end up in a situation where DC1 will have the last known
+		// replicated data snapshots for DC2 and vice versa. In this case, we can optionally
+		// (based on user request) send such replicated data snapshots to their	respective
+		// data centers where they originally came from. Users can indicate this preference  
+		// via this appconfig setting. After both data centers have been brought up
+		// correctly, users can either delete this setting in the appconfig belonging to
+		// each DC or simply set it to false.
+		expression<boolean> $sendDataSnapshotsToOriginDCAtStartup :
+			(boolean)getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_sendDataSnapshotsToOriginDCAtStartup", "false");
+			
+		// This composite takes one parameter that must be specified at the time of
+		// invoking this non-main composite. If this file is present, the config values
+		// specified in this file will take precedence over the ones that were already
+		// read from the app config facility in case user has configured that as well.
+		expression<rstring> $configFileName;
+		
+		// All the cross DC config file key names are declared as constants here.
+		expression<rstring> $localDataCenterNameKey : "localDataCenterName";
+		expression<rstring> $crossDCOperationModeKey : "crossDCOperationMode";
+		expression<rstring> $crossDCHttpPortKey : "crossDCHttpPort";
+		expression<rstring> $remoteDataCenterApplicationMachineNamesKey : 
+			"remoteDataCenterApplicationMachineNames";
+		expression<rstring> $dataSnapshotStorageDirectoryKey :
+			"dataSnapshotStorageDirectory";
+		expression<rstring> $crossDCInitDelayKey : "crossDCInitDelay";
+		expression<rstring> $heartbeatExchangeIntervalKey : "heartbeatExchangeInterval";
+		expression<rstring> $consecutiveHeartbeatMissesAllowedKey :
+			"consecutiveHeartbeatMissesAllowed";
+		expression<rstring> $dataSnapshotExchangeIntervalKey :
+			"dataSnapshotExchangeInterval";
+		expression<rstring> $sendToAllRemoteMachinesKey : "sendToAllRemoteMachines";
+		expression<rstring> $alwaysLogHttpErrorsKey : "alwaysLogHttpErrors";
+		expression<rstring> $httpConnectionTimeoutKey : "httpConnectionTimeout"; 
+		expression<rstring> $httpReadTimeoutKey : "httpReadTimeout";
+		expression<rstring> $retainOlderDataSnapshotsAtStartupKey : 
+			"retainOlderDataSnapshotsAtStartup";
+		expression<rstring> $sendDataSnapshotsToOriginDCAtStartupKey : 
+			"sendDataSnapshotsToOriginDCAtStartup";
+		
+	graph
+		//
+		// This flow graph contains two different code segments.
+		//
+		// 1) A code segment to generate the regular heartbeat and the
+		//    in-memory data snapshot messages and send them to the remote data center.
+		//
+		// 2) Another code segment to receive the regular heartbeat and the
+		//    in-memory data snapshot messages from the remote data center 
+		//    as well as for detecting the pre-configured number of consecutive 
+		//    heartbeat misses to trigger the DC failover for processing
+		//    the data snapshots received thus far from the remote data center. 
+		//
+		// ========= START OF THE HEARTBEAT AND DATASNAPSHOT SENDING LOGIC =========
+		// Generate the periodic heartbeat signal. This will serve as a reminder  
+		// for a proper hearbeat message to be sent to the remote data center.
+		// Main purpose of the heartbeat is to inform that all is well at 
+		// this local data center.
+		(stream<HearbeatSignalType> HeartbeatSignal as HS) as HeartbeatSignalGenerator = Beacon() {
+			logic
+				state: {
+					float64 _heartbeatExchangeInterval = 
+						(float64)readValueFromConfigFile($configFileName, 
+						$heartbeatExchangeIntervalKey, (rstring)$heartbeatExchangeInterval);
+					float64 _crossDCInitDelay = 
+						(float64)readValueFromConfigFile($configFileName, 
+						$crossDCInitDelayKey, (rstring)$crossDCInitDelay);					
+				}
+					
+			param
+				period: _heartbeatExchangeInterval;
+				// Give a few seconds for the operators in the external application to
+				// start up and get ready before we can begin exchanging the heartbeat messages.
+				initDelay: _crossDCInitDelay;
+				
+			output
+				HS: signal = true;
+		} 
+
+		// In this operator, we will do one of the following tasks.
+		// 1) Prepare periodic heartbeat messages to be sent out by the 
+		//    custom Java operator (HttpBlobSender) below.
+		// 2) If it is time to send data snapshots to the remote data center,
+		//    we will send a data snapshot signal to alert the application logic 
+		//    running in the other composite(s) of an external application.
+		(stream<BinaryPayloadType> SerializedHeartbeatMessage as SHM;
+		 stream<BinaryPayloadType> SerializedNonHeartbeatMessage as SNHM;
+		 stream<HeartbeatMessageType> DataSnapshotSignal as DSS;
+		 stream<boolean x> ProcessDataFromSnapshotFiles as PDFSS) as HeartbeatMessagePreparer = 
+		 	Custom(HeartbeatSignal as HS; RemoteDataCenterStatus as RDCS;
+		 	SpecialMessage as SM) {
+		 	logic
+		 		state: {
+		 			// Different kinds of state variables needed for the logic of this operator.
+		 			mutable uint64 _heartbeatCnt = 1ul;
+		 			mutable boolean _remoteDCHeartbeatSensedAtleastOnceBefore = false;
+		 			mutable boolean _localDataCenterStartedJustNow = true;
+		 			mutable HeartbeatMessageType _heartbeatMessage = {};
+		 			mutable BinaryPayloadType _serilizedHeartbeatMessage = {};
+		 			mutable boolean _isRemoteDataCenterActive = false;
+		 			rstring _localDataCenterName = 
+						readValueFromConfigFile($configFileName, 
+						$localDataCenterNameKey, $localDataCenterName);
+		 			int32 _crossDCOperationMode = 
+						(int32)readValueFromConfigFile($configFileName, 
+						$crossDCOperationModeKey, (rstring)$crossDCOperationMode);
+		 			float64 _heartbeatExchangeInterval = 
+						(float64)readValueFromConfigFile($configFileName, 
+						$heartbeatExchangeIntervalKey, (rstring)$heartbeatExchangeInterval);
+		 			float64 _dataSnapshotExchangeInterval = 
+						(float64)readValueFromConfigFile($configFileName, 
+						$dataSnapshotExchangeIntervalKey, (rstring)$dataSnapshotExchangeInterval);		 			
+		 			rstring _dataSnapshotStorageDirectory = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotStorageDirectoryKey, $dataSnapshotStorageDirectory);		 			
+		 			boolean _retainOlderDataSnapshotsAtStartup = 
+						(boolean)readValueFromConfigFile($configFileName, 
+						$retainOlderDataSnapshotsAtStartupKey, (rstring)$retainOlderDataSnapshotsAtStartup);		 			
+		 			boolean _sendDataSnapshotsToOriginDCAtStartup = 
+						(boolean)readValueFromConfigFile($configFileName, 
+						$sendDataSnapshotsToOriginDCAtStartupKey, (rstring)$sendDataSnapshotsToOriginDCAtStartup);		 			
+		 			mutable boolean _localDCIsBeingShutdownInAnOrderlyManner = false;
+		 		}
+		 		
+		 		onTuple HS: {
+		 			// If the local DC is in the process of being shutdown normally,
+		 			// then, we can stop the heartbeat exchanges with the remote DC.
+		 			if (_localDCIsBeingShutdownInAnOrderlyManner == true) {
+		 				return;
+		 			}
+		 			
+		 			// If this local data center got started just now, ensure that
+		 			// we delete all the old .snapshot files that still exist as 
+		 			// received during the previous run of this local data center.
+		 			if (_localDataCenterStartedJustNow == true) {
+		 				_localDataCenterStartedJustNow = false;
+		 				
+		 				// Since this data center is starting up just now, we can
+		 				// delete any old snapshot files existing in the snapshot directory.
+		 				// We can delete them only if the following options are not activated.
+		 				//
+						// 1) If the user has configured to retain the data
+						// stored in older snapshot files at the startup time 
+						// of this local DC, let us not delete the pre-existing
+						// snapshot files now. After the external application's
+						// operators are fully started, then user must send a
+						// special message (SendMeDataFromSnapshotFiles)into 
+						// CrossDataCenterFailover composite's SpecialMessage input stream. 
+						// That action will trigger this particular operator to read 
+						// the data from the pre-existing snapshot files and 
+						// send them back for processing.
+						//
+		 				// 2) If the user has configured for sending any existing
+		 				// data snapshots to their origin DC at the application
+		 				// start-up time, let us not delete any of the existing
+		 				// data snapshot files during the application startup.
+		 				// Read the detailed commentary available at the place 
+		 				// where this appconfig value is read above in the composite param clause.
+		 				if (_retainOlderDataSnapshotsAtStartup == false &&
+		 					_sendDataSnapshotsToOriginDCAtStartup == false) {
+		 					delete_files_in_a_directory(_dataSnapshotStorageDirectory, ".snapshot");
+		 				}
+		 			}
+		 			
+		 			// If the remote data center was seen to be active earlier and 
+		 			// if it is not active now, there is nothing to do here.
+		 			if (_remoteDCHeartbeatSensedAtleastOnceBefore == true &&
+		 				_isRemoteDataCenterActive == false) {
+		 				// We will get back to work later, when the remote DC comes back alive.
+		 				return;
+		 			}
+		 			
+		 			// Prepare a plain and a regular heartbeat message with no data snapshot details.
+	 				_heartbeatMessage = (HeartbeatMessageType){};
+	 				_heartbeatMessage.heartbeatCnt = _heartbeatCnt;
+	 				_heartbeatMessage.dataCenterOrigin = _localDataCenterName;
+
+					uint64 hbExchangeInterval = (uint64)_heartbeatExchangeInterval;
+					uint64 dsExchangeInterval = (uint64)_dataSnapshotExchangeInterval;
+					
+		 			// If it is time to send the data snapshot from this
+		 			// local data center to the remote data center, then let us
+		 			// send a signal to the application logic located in the other 
+		 			// composites of an external application for it to create the 
+		 			// in-memory snapshot and send it back to this composite.
+		 			// Skip sending the data snapshot if the remotDC is inactive.
+		 			if ((_isRemoteDataCenterActive == true) && 
+		 				((_heartbeatCnt * hbExchangeInterval)  %  dsExchangeInterval) == 0ul) {
+		 				// Send the data snapshot signal now to the logic present
+		 				// in the external application as a reminder for that 
+		 				// logic to generate the data snapshot of its internal in-memory state.
+		 				// That external application logic will receive the partially populated
+		 				// heartbeat message that we send from here. That application
+		 				// logic will fill the two other attributes in the heartbeat 
+		 				// message tuple, serialize that tuple and send back just the 
+		 				// binary content here to be sent to the remote data center.
+		 				// Set the heartbeat message type to indicate that it carries snapshot data.
+		 				if (_crossDCOperationMode == 1) {
+		 					// Only if the local data center is operating in active mode, 
+		 					// send the data snapshot signal to the external application logic.
+		 					// Because, in a passive mode there is no stateful data available in
+		 					// the external application logic to be replicated to the remoteDC.
+			 				_heartbeatMessage.heartbeatMsgType = 2u;
+							submit(_heartbeatMessage, DSS);		
+							_heartbeatCnt++;
+						} 				
+		 			} 
+		 			
+	 				// Let us go ahead and send the regular heartbeat message to the 
+	 				// remote data center without any data snapshot simply to
+	 				// inform that we are alive and well.
+	 				// Serialize the heartbeat message now.
+	 				// Do the Tuple-->Blob conversion now.
+	 				// Set the heartbeat message type to indicate that it is a 
+	 				// regular heartbeat message without the snapshot data.
+	 				_heartbeatMessage.heartbeatMsgType = 1u;
+	 				_heartbeatMessage.heartbeatCnt = _heartbeatCnt;
+	 				serializeTuple(_heartbeatMessage, _serilizedHeartbeatMessage.binaryPayload);
+					submit(_serilizedHeartbeatMessage, SHM);		 				
+
+		 			// Increment the counter for the next heartbeat to be sent when it is due.
+		 			// It is better to set the periodic heartbeat interval long enough to accommodate
+		 			// the time it takes to send all the data snapshot messages to the remote data center. 
+		 			// That will nicely interleave the regular heartbeat messages that occur more 
+		 			// frequently than the data snapshot messages.
+		 			_heartbeatCnt++;
+		 		}
+		 		
+		 		// Update the remote data center up or down status.
+		 		onTuple RDCS: {
+		 			// If the local DC is in the process of being shutdown normally,
+		 			// then, we can stop recording about the status of the remote DC.
+		 			if (_localDCIsBeingShutdownInAnOrderlyManner == true) {
+		 				return;
+		 			}
+		 		
+		 			_isRemoteDataCenterActive = RDCS.activeOrInactive;
+		 			
+		 			if (_isRemoteDataCenterActive == true && 
+		 				_remoteDCHeartbeatSensedAtleastOnceBefore == false) {
+		 				// This is the very first contact made with this remoteDC.
+		 				_remoteDCHeartbeatSensedAtleastOnceBefore = true;
+		 				
+		 				// If the user has configured to send the old 
+		 				// replicated data snapshots to the remote DC on its
+		 				// very first contact, let us send them to their original DC.
+		 				// This is a special option we support. Read the commentary either
+		 				// in the param clause above or in the schema SPL file.
+		 				if (_sendDataSnapshotsToOriginDCAtStartup == true) {
+		 					mutable list<rstring> snapshotFileNamesList = [];
+		 					int32 fileCnt = get_file_names_in_a_directory(
+		 						_dataSnapshotStorageDirectory,
+								".snapshot", snapshotFileNamesList);
+		 					
+		 					if (fileCnt > 0) {
+		 						// We can read and send the replicated data snapshot we have
+		 						// stored in the local DC to the remote DC now.
+		 						for (rstring tempFileName in snapshotFileNamesList) {
+									rstring fileName = _dataSnapshotStorageDirectory + 
+										"/" + tempFileName;
+									_heartbeatMessage = (HeartbeatMessageType){};
+									mutable int32 rc = readBinaryDataFromFile(
+										_heartbeatMessage.dataSnapshot, fileName);
+							
+									if (rc != 0) {
+										appTrc(Trace.error,
+											"_XXXXX_ During application startup, we are " +
+											"unable to read the binary data snapshot from this file to be sent to the Remote DC: " +
+											fileName + ". Error code=" + (rstring)rc, "Heartbeat-Message-Preparer");					
+									} else {
+										if (blobSize(_heartbeatMessage.dataSnapshot) > 0ul) {
+	 										_heartbeatMessage.heartbeatCnt = _heartbeatCnt;
+	 										_heartbeatCnt++;
+	 										_heartbeatMessage.dataCenterOrigin = _localDataCenterName;
+	 										// Set the heartbeat message type to indicate that it 
+	 										// carries snapshot data that originated from the remoteDC which is
+	 										// being sent back there based on user's request.
+		 									_heartbeatMessage.heartbeatMsgType = 4u;
+											// We will serialize this entire tuple containing four different attributes.
+											mutable BinaryPayloadType oTuple = {};
+											serializeTuple(_heartbeatMessage, oTuple.binaryPayload);
+	 										// Send this away to the remote DC.
+	 										submit(oTuple, SNHM);
+											appTrc(Trace.error,
+												"_XXXXX_ During application startup, we sent " +
+												(rstring)blobSize(_heartbeatMessage.dataSnapshot) +
+												" bytes of the binary data snapshot to the remote DC from this file: " +
+												fileName + ".", "Heartbeat-Message-Preparer");
+				 						}
+				 					}
+				 				} // End of the for loop.
+				 			} // End of if (fileCnt > 0)
+		 					
+		 					delete_files_in_a_directory(_dataSnapshotStorageDirectory, ".snapshot");
+		 				}
+		 			}		 			
+		 		}
+		 		
+		 		onTuple SM: {
+		 			// This is a special message received from the external application.
+		 			// If it is a valid message, let us process it here.
+		 			if (SM.msg == "OrderlyShutdown") {
+		 				_localDCIsBeingShutdownInAnOrderlyManner = true;
+		 				// It is a message from the external application telling us that
+		 				// the application is going to be shutdown normally. So, we can
+		 				// inform the remote DC to treat it as an orderly shutdown and not
+		 				// as a failure of this DC.
+		 				_heartbeatMessage = (HeartbeatMessageType){};
+		 				_heartbeatMessage.heartbeatCnt = _heartbeatCnt++;
+		 				_heartbeatMessage.dataCenterOrigin = _localDataCenterName;
+		 				// Set the message type to indicate that it is an orderly shutdown of
+		 				// the application on this Local DC and not an abrupt failure.
+		 				_heartbeatMessage.heartbeatMsgType = 3u;
+						// We will serialize this entire tuple containing three different attributes.
+						mutable BinaryPayloadType oTuple = {};
+						serializeTuple(_heartbeatMessage, oTuple.binaryPayload);
+	 					// Send this away to the remote DC.
+	 					submit(oTuple, SNHM);
+						appTrc(Trace.error,
+							"_XXXXX_ We sent an orderly shutdown message from the local DC " +
+							_localDataCenterName + " to the remote DC.", "Heartbeat-Message-Preparer");
+		 			} else if (SM.msg == "SendMeDataFromSnapshotFiles") {
+						ProcessDataFromSnapshotFiles pdfssTuple = {x=true};
+						submit(pdfssTuple, PDFSS);
+		 			}
+		 		}
+		}
+
+		// We want to have a dedicated HTTP Blob sender/receiver pair just for exchanging the
+		// periodic heartbeat messages. We don't want the snapshot data transfer to hog that
+		// HTTP channel which may result in missing heartbeats and accidentally declare a 
+		// remote DC as down. We want to avoid that situation via this dedicated 
+		// sender/receiver pair for the periodic heartbeat messages.
+		// Send the periodic heartbeat message to the remote data center.
+		(stream<HttpResponseType> HttpPostResponse1) as CrossDataCenterSender1 = 
+			HttpBlobSender(SerializedHeartbeatMessage as SHM) {
+			logic
+				state: {
+					// Base crossDC Http port is used here for the 
+					// dedicated blob sender for exchanging the periodic hearbeats.
+					// For exchanging the data snapshot within a parallel region in a separate 
+					// code block below, start using the HTTP Port one higher than the 
+					// base crossDC Http port.
+					int32 _crossDCHttpPort = 
+						(int32)readValueFromConfigFile($configFileName, 
+						$crossDCHttpPortKey, (rstring)$crossDCHttpPort);
+					rstring _remoteDataCenterApplicationMachineNames = 
+						readValueFromConfigFile($configFileName, 
+						$remoteDataCenterApplicationMachineNamesKey, $remoteDataCenterApplicationMachineNames);
+					// Since we are not in a parallel region for this operator,
+					// there is no need to include the channel number as part of the URL.
+					// We are going to use a dedicated heartbeat receiver URL here.
+					rstring _remoteDataCenterUrlPath = 
+						$remoteDataCenterUrlPathForHeartbeatReceiver;
+					boolean _sendToAllRemoteMachines = 
+						(boolean)readValueFromConfigFile($configFileName, 
+						$sendToAllRemoteMachinesKey, (rstring)$sendToAllRemoteMachines);					
+					boolean _alwaysLogHttpErrors = 
+						(boolean)readValueFromConfigFile($configFileName, 
+						$alwaysLogHttpErrorsKey, (rstring)$alwaysLogHttpErrors);					
+					int32 _httpConnectionTimeout = 
+						(int32)readValueFromConfigFile($configFileName, 
+						$httpConnectionTimeoutKey, (rstring)$httpConnectionTimeout);					
+					int32 _httpReadTimeout = 
+						(int32)readValueFromConfigFile($configFileName, 
+						$httpReadTimeoutKey, (rstring)$httpReadTimeout);					
+				}
+				
+			param
+				// A comma separated string containing one or more machine names or IP addresses.
+				remoteMachineNames: _remoteDataCenterApplicationMachineNames;
+				remoteHttpPort: _crossDCHttpPort;
+				// Full URL looks like this. URL path is everything that appears after the port number.
+				// "http://localhost:9091/crossdcrx/CrossDataCenterReceiverForHB/ports/output/0/inject"
+				remoteUrlPath: _remoteDataCenterUrlPath;
+				binaryDataAttributeName: "binaryPayload";
+				// We can send the blob to all the configured remote machines or 
+				// to any one of the successful machine that accepts our HTTP connection request.
+				sendToAllRemoteMachines: _sendToAllRemoteMachines;
+				alwaysLogHttpErrors: _alwaysLogHttpErrors;
+				httpConnectionTimeout: _httpConnectionTimeout;
+				httpReadTimeout: _httpReadTimeout;
+			
+			config
+				threadedPort: queue(SHM, Sys.Wait);
+		}
+
+
+
+		// Send the serialized binary snapshot content to the remote data center.
+		@parallel(width=$numberOfHttpSenderReceiverPairs)
+		(stream<HttpResponseType> HttpPostResponse2) as CrossDataCenterSender2 = 
+			HttpBlobSender(SerializedDataSnapshotMessage, SerializedNonHeartbeatMessage) {
+			logic
+				state: {
+					// Base crossDC Http port is used for the 
+					// dedicated blob sender above for exchanging the periodic hearbeats.
+					// For exchanging the data snapshot within this parallel region,
+					// start using the HTTP Port one higher than the base crossDC Http port.
+					int32 _crossDCHttpPort = 
+						(int32)readValueFromConfigFile($configFileName, 
+						$crossDCHttpPortKey, (rstring)$crossDCHttpPort) + 1 + getChannel();
+					rstring _remoteDataCenterApplicationMachineNames = 
+						readValueFromConfigFile($configFileName, 
+						$remoteDataCenterApplicationMachineNamesKey, $remoteDataCenterApplicationMachineNames);
+					// Since we are in a parallel region, we need to substitute the proper
+					// parallel channel numer as part of the URL. That is why we are calling a function here.
+					rstring _remoteDataCenterUrlPath = 
+						getUrlEmbeddedWithParallelChannel($remoteDataCenterUrlPath, getChannel());
+					boolean _sendToAllRemoteMachines = 
+						(boolean)readValueFromConfigFile($configFileName, 
+						$sendToAllRemoteMachinesKey, (rstring)$sendToAllRemoteMachines);					
+					boolean _alwaysLogHttpErrors = 
+						(boolean)readValueFromConfigFile($configFileName, 
+						$alwaysLogHttpErrorsKey, (rstring)$alwaysLogHttpErrors);					
+					int32 _httpConnectionTimeout = 
+						(int32)readValueFromConfigFile($configFileName, 
+						$httpConnectionTimeoutKey, (rstring)$httpConnectionTimeout);					
+					int32 _httpReadTimeout = 
+						(int32)readValueFromConfigFile($configFileName, 
+						$httpReadTimeoutKey, (rstring)$httpReadTimeout);					
+				}
+				
+			param
+				// A comma separated string containing one or more machine names or IP addresses.
+				remoteMachineNames: _remoteDataCenterApplicationMachineNames;
+				remoteHttpPort: _crossDCHttpPort;
+				// Full URL looks like this. URL path is everything that appears after the port number.
+				// "http://localhost:9091/crossdcrx/CrossDataCenterReceiver/ports/output/0/inject"
+				remoteUrlPath: _remoteDataCenterUrlPath;
+				binaryDataAttributeName: "binaryPayload";
+				// We can send the blob to all the configured remote machines or 
+				// to any one of the successful machine that accepts our HTTP connection request.
+				sendToAllRemoteMachines: _sendToAllRemoteMachines;
+				alwaysLogHttpErrors: _alwaysLogHttpErrors;
+				httpConnectionTimeout: _httpConnectionTimeout;
+				httpReadTimeout: _httpReadTimeout;
+		}
+				
+		// Any HTTP abnormal errors will be reported via this operator.
+		() as HttpPostResponseSink = Custom(HttpPostResponse1, HttpPostResponse2 as HPR) {
+			logic
+				onTuple HPR: {
+					appTrc(Trace.info, 
+						"_XXXXX_ HTTP POST response=" + (rstring)HPR, "CrossDCSender");
+				}
+				
+			config
+				threadedPort: queue(HPR, Sys.Wait, 40);
+		}
+		// ========= END OF THE HEARTBEAT AND DATASNAPSHOT SENDING LOGIC =========
+
+		// === START OF THE REMOTE DATA CENTER HEARTBEAT and DATASNAPSHOT RECEIVING LOGIC ===
+		// We are going to have a dedicated receiver for the heartbeat messages and then a pool of
+		// parallel receivers for the data snapshot messages.
+		
+		// This operator can receive any binary data sent from
+		// one or more HTTP clients (.wav, .jpg, .mov, .tar, any arbitrary binary data block etc.)
+		// First attribute in the output stream must be of type blob.
+		// Second attribute in the output stream is optional. If present, it must be
+		// a map<rstring, rstring> where the HTTP request header names and their values will be stored.
+		//
+		// If an outside web (JavaScript) or http (Java, Python etc.) client application wants to
+		// do a BLOB data post to this operator, it can use the following URL.
+		// This URL must include the following two parts right after the port number.
+		// 1) If this operator has the context parameter, then the value of that parameter must be
+		//    included. If this parameter is not present, it can be omitted.
+		// 2) If this operator has an explicit user specified name, then It should be 
+		//    included. If there is no user specified explicit operator name, then it must be 
+		//    the output stream name of the HTTPBLOBInjection source operator.
+		//    If this operator is inside a parallel region, then the operator/output stream in
+		//    the URL should indicate parallel channel e-g: CrossDataCenterReceiver[0]
+		// http://<IP-Address-Of-Your-Streams-Machine>:<port>/crossdcrx/CrossDataCenterReceiver/ports/output/0/inject
+		//
+		// Let us have a dedicated heartbeat receiver first.
+		// This is responsible only for receiving the periodic heartbeat messages.
+		// All types of other heavy duty messages such as data snapshot, orderly shutdown,
+		// both data centers going down and coming back simultaneously etc. will be handled by
+		// a bank of parallel region receivers below.
+		(stream<HttpBinaryPayloadType> BinData1) as CrossDataCenterReceiverForHB = HTTPBLOBInjection() {
+			logic
+				state: {
+					// Base crossDC Http port is used here for the 
+					// dedicated blob receiver for exchanging the periodic heartbeats.
+					// For receiving the data snapshot within a parallel region in a separate 
+					// code block below, start using the HTTP Port one higher than the 
+					// base crossDC Http port.
+					int32 _crossDCHttpPort = 
+						(int32)readValueFromConfigFile($configFileName, 
+						$crossDCHttpPortKey, (rstring)$crossDCHttpPort);
+				}
+
+			param
+				port : _crossDCHttpPort;
+				contextResourceBase : getThisToolkitDir() + "/opt" ;
+				context : "crossdcrx" ;				
+		}
+		
+		// This Watchdog operator will perform the following tasks.
+		//
+		// 1) It will extract the heartbeat messages received from the
+		//    remote data center and reset the missed heartbeat messages count to 0.
+		//
+		// 2) It will monitor the status of the remote data center by
+		//    keeping track of any missed hearbeat messages from there.
+		//    If the missed heartbeat messages count reaches a pre-configured
+		//    maximum value, then it will declare that the remote data center has 
+		//    reached DOWN or FAILED state.
+		//
+		(stream<RemoteDataCenterStatusType> RemoteDataCenterStatus as RDCS) 
+		 as RemoteDataCenterHeartbeatWatchdog = 
+			Custom(BinData1 as BD; HeartbeatSignal as HS; SpecialMessage as SM) {
+			logic
+				state: {
+		 			// Different kinds of state variables needed for the logic of this operator.
+		 			mutable uint8 _missedHeartbeatCnt = 0ub;
+		 			mutable HeartbeatMessageType _remoteDCMessageTuple = {};
+		 			mutable boolean _isRemoteDataCenterActive = false;
+		 			mutable RemoteDataCenterStatusType _remoteDataCenterStatus = {};	
+		 			uint8 _consecutiveHeartbeatMissesAllowed = 
+						(uint8)readValueFromConfigFile($configFileName, 
+						$consecutiveHeartbeatMissesAllowedKey, (rstring)$consecutiveHeartbeatMissesAllowed);		 			
+		 			mutable boolean _localDCIsBeingShutdownInAnOrderlyManner = false;	
+				}	
+				
+				onTuple BD: {
+					if (_localDCIsBeingShutdownInAnOrderlyManner == true) {
+						// Local DC is being shutdown normally.
+						// So, there is no need to process any messages coming from the remote DC.
+						return;
+					}
+					
+					appTrc(Trace.info, 
+						"_XXXXX_ HTTP Request Headers=" + (rstring)BD.httpRequestHeaders, 
+						"RemoteDC-Heartbeat-Watchdog");
+					appTrc(Trace.info, 
+						"_XXXXX_ Blob size=" + (rstring)size(binaryPayload),
+						"RemoteDC-Heartbeat-Watchdog");
+					appTrc(Trace.info, 
+						"_XXXXX_ Blob data=" + (rstring)binaryPayload,
+						"RemoteDC-Heartbeat-Watchdog");
+
+					// We received a heartbeat message from the remote data center.
+					// That means all is well there. Reset the missed heartbeat counter to 0 now.
+					_missedHeartbeatCnt = 0ub;
+					
+					// Update the remote data center status if it just now made a status transition.
+					if (_isRemoteDataCenterActive == false) {
+						_isRemoteDataCenterActive = true;
+						
+						// Inform this to the operator in the other code segment above so that 
+						// it can start start sending heartbeat messages to the active remote DC.
+						// This tuple also serves as a notification of a remote data center
+						// alive status to the external application logic. This stream will be
+						// one of the output streams from this composite that can be
+						// tapped into by the external application logic.
+						_remoteDataCenterStatus.activeOrInactive = _isRemoteDataCenterActive;
+						submit(_remoteDataCenterStatus, RDCS);
+					}
+					
+					// Let us deserialize the serialized heartbeat message that
+					// we received from the remote data center to its original
+					// tuple form. After that, we will inspect to see whether 
+					// it is a plain heartbeat message. Simply for a sanity check.
+					// 
+					// Do the Blob-->Tuple conversion now.
+					_remoteDCMessageTuple = (HeartbeatMessageType){};
+					deserializeTuple(_remoteDCMessageTuple, BD.binaryPayload);
+
+
+					// Check if it is a pure heartbeat message.
+					if (_remoteDCMessageTuple.heartbeatMsgType == 1u) {
+						appTrc(Trace.info, "_XXXXX_ Received the heartbeat message " +
+							(rstring)_remoteDCMessageTuple.heartbeatCnt + 
+							" with no data snapshot from the data center named " +
+							 _remoteDCMessageTuple.dataCenterOrigin + 
+							 ".", "RemoteDC-Heartbeat-Watchdog");
+						return;
+					}
+				}
+				
+				onTuple HS: {
+					if (_localDCIsBeingShutdownInAnOrderlyManner == true) {
+						// Local DC is being shutdown normally.
+						// So, there is no need to process any heartbeat status checks.
+						return;
+					}
+
+					// If we have already detected the remote data center failure, 
+					// then there is no need to keep doing it repeatedly.
+					// Hereafter, the next thing that has to happen is for the failed
+					// remote data center to come back alive and start sending its
+					// periodic hearbeat messages again. 
+					if (_missedHeartbeatCnt > _consecutiveHeartbeatMissesAllowed) {
+						return;
+					} else {
+						// Simply increment the missed heartbeat counter.
+						// If the remote data center is alive and well, then this
+						// counter will get reset to 0 when the next periodic hearbeat
+						// message from that data center arrives here (i.e. in the
+						// previous onTuple BD: code logic).
+						_missedHeartbeatCnt++;					
+					}
+					
+					// If we have consecutively missed a certain number of heartbeat messages
+					// from the remote data center, then we can make a declaration that
+					// the remote data center has gone down or it failed.
+					if (_missedHeartbeatCnt > _consecutiveHeartbeatMissesAllowed) {
+						// Update the remote data center status if it just now made a status transition.
+						if (_isRemoteDataCenterActive == true) {
+							_isRemoteDataCenterActive = false;
+							
+							// Inform this to the operator in the other code segment above so that 
+							// it can stop sending heartbeat messages to the inactive remote DC.
+							// This tuple also serves as a notification of a remote data center
+							// failure to the external application logic. This stream will be
+							// one of the output streams from this composite that can be
+							// tapped into by the external application logic.
+							_remoteDataCenterStatus.activeOrInactive = _isRemoteDataCenterActive;
+							submit(_remoteDataCenterStatus, RDCS);
+						} else {
+							// The remote data center has not become active either since 
+							// the time our local data center became active or since
+							// the last time the remoteDC was detected inactive.
+							// Because of that, we have nothing to watchdog for. 
+							// We have to simply wait for the remote data center to become active.
+							return;
+						}					
+					}
+				}
+				
+				onTuple SM: {
+		 			// This is a special message received from the external application.
+		 			// If it is a valid message, let us process it here.
+		 			if (SM.msg == "OrderlyShutdown") {
+		 				_localDCIsBeingShutdownInAnOrderlyManner = true;
+		 			}
+				}
+			
+			config
+				threadedPort: queue(BD, Sys.Wait, 40);
+		}
+
+		// This is a bank of Blob receivers within a parallel region. They will receive
+		// remote data center messages such as the data snapshot, orderly shutdown of a remote DC,
+		// data belonging to the original DC in the case of both DCs going down and coming
+		// back simultaneously.
+		@parallel(width=$numberOfHttpSenderReceiverPairs)
+		(stream<HttpBinaryPayloadType> BinData2) as CrossDataCenterReceiver = HTTPBLOBInjection() {
+			logic
+				state: {
+					// Base crossDC Http port is used for the 
+					// dedicated blob receiver above for exchanging the periodic hearbeats.
+					// For exchanging the data snapshot within this parallel region,
+					// start using the HTTP Port one higher than the base crossDC Http port.
+					int32 _crossDCHttpPort = 
+						(int32)readValueFromConfigFile($configFileName, 
+						$crossDCHttpPortKey, (rstring)$crossDCHttpPort) + 1 + getChannel();
+				}
+
+			param
+				port : _crossDCHttpPort;
+				contextResourceBase : getThisToolkitDir() + "/opt" ;
+				context : "crossdcrx" ;				
+		}
+	
+		// This Watchdog operator will perform the following tasks.
+		//
+		// 1) After detecting the DOWN or FAILED state of the remote data center,
+		//    it will send the replicated data snapshot details received from that 
+		//    failed remote data center to the external application logic for it to
+		//    consume and continue processing that data.
+		//
+		// 2) It will also process remote DC messages such data snapshot (msgType=2u),
+		//    remote DC orderly shutdown (msgTupe=3u), both DCs going down and
+		//    coming back simultaneously (msgType=4u).
+		(stream<HeartbeatMessageType> ProcessDataFromRemoteDC1 as PDFRDC) as RemoteDataCenterWatchdog = 
+			Custom(BinData2 as BD; RemoteDataCenterStatus as RDCS; SpecialMessage as SM) {
+			logic
+				state: {
+		 			// Different kinds of state variables needed for the logic of this operator.
+		 			mutable HeartbeatMessageType _remoteDCMessageTuple = {};
+		 			// We will store the names of the files where we are 
+		 			// persisting the replicated data snapshots received from the remote DC.
+		 			mutable map<rstring, boolean> _remoteDataSnapshotFileNamesMap = {};
+		 			int32 _crossDCOperationMode = 
+						(int32)readValueFromConfigFile($configFileName, 
+						$crossDCOperationModeKey, (rstring)$crossDCOperationMode);
+		 			rstring _dataSnapshotStorageDirectory = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotStorageDirectoryKey, $dataSnapshotStorageDirectory);
+		 			mutable boolean _localDCIsBeingShutdownInAnOrderlyManner = false;
+		 			mutable RemoteDataCenterStatusType _remoteDataCenterStatus = {};
+				}	
+				
+				onTuple BD: {
+					if (_localDCIsBeingShutdownInAnOrderlyManner == true) {
+						// Local DC is being shutdown normally.
+						// So, there is no need to process any messages coming from the remote DC.
+						return;
+					}
+					
+					appTrc(Trace.info, 
+						"_XXXXX_ HTTP Request Headers=" + (rstring)BD.httpRequestHeaders, 
+						"RemoteDC-Watchdog");
+					appTrc(Trace.info, 
+						"_XXXXX_ Blob size=" + (rstring)size(binaryPayload),
+						"RemoteDC-Watchdog");
+					appTrc(Trace.info, 
+						"_XXXXX_ Blob data=" + (rstring)binaryPayload,
+						"RemoteDC-Watchdog");
+					
+					// Let us deserialize the serialized heartbeat message that
+					// we received from the remote data center to its original
+					// tuple form. After that, we will inspect to see whether 
+					// it is a plain heartbeat message or 
+					// a heartbeat message combined with data snapshot that was 
+					// sent to this local data center for cross data center replication.
+					// 
+					// Do the Blob-->Tuple conversion now.
+					_remoteDCMessageTuple = (HeartbeatMessageType){};
+					deserializeTuple(_remoteDCMessageTuple, BD.binaryPayload);
+
+					// Check if it is an orderly shutdown message of the remote DC.
+					// This is a very rare case where there is a need to quiesce a
+					// remote DC, then orderly shut it down without a need for
+					// the other data center to take over its replicated snapshot data.
+					// In that case, we have to do the following steps.
+					// So, it is not an abrupt remote DC failure.
+					// In this case, there is no remote Data Center operational take-over needed.
+					// So, delete the remote DC's replicated snapshot data.
+					// Then, mark the remote DC status as DOWN.
+					if (_remoteDCMessageTuple.heartbeatMsgType == 3u) {
+						appTrc(Trace.info, 
+							"_XXXXX_ Received a remote DC orderly shutdown message " +
+							"with a heartbeat count " + 
+							(rstring)_remoteDCMessageTuple.heartbeatCnt + 
+							" from the data center named " +
+							 _remoteDCMessageTuple.dataCenterOrigin + 
+							 ".", "RemoteDC-Watchdog");
+						// Let us first delete the remote DC's replicated snapshot files we have here.
+						mutable int32 rc = 0;
+						for (rstring fileName in _remoteDataSnapshotFileNamesMap) {
+							remove(fileName, rc);
+						}
+	
+						// Empty the snapshot file map.
+						clearM(_remoteDataSnapshotFileNamesMap);						
+						return;
+					}
+
+					// Check if it is a user triggered old snapshot being returned back to
+					// the origin DC to which this snapshot belonged to.
+					// This is a special feature we support. Read the commentary either
+		 			// in the param clause above or in the schema SPL file.
+					if (_remoteDCMessageTuple.heartbeatMsgType == 4u) {
+						appTrc(Trace.info, 
+							"_XXXXX_ During the application startup, received a data snapshot " +
+							"that originally belonged to this DC before it went down. " +
+							"Heartbeat count=" + 
+							(rstring)_remoteDCMessageTuple.heartbeatCnt + 
+							", data snapshot size=" + 
+							(rstring)blobSize(_remoteDCMessageTuple.dataSnapshot) +
+							". It came from the remote data center named " +
+							 _remoteDCMessageTuple.dataCenterOrigin + 
+							 ".", "RemoteDC-Watchdog");
+						
+						if (blobSize(_remoteDCMessageTuple.dataSnapshot) > 0ul) {
+							// Convert the old snapshot binary data to tuple now.
+							mutable HeartbeatMessageType _newRemoteDCMessageTuple = 
+								(HeartbeatMessageType){};
+							deserializeTuple(_newRemoteDCMessageTuple,
+								_remoteDCMessageTuple.dataSnapshot);
+							// Set the heartbeat message type as 4 to indicate that
+							// this snapshot data is getting sent back to the 
+							// original DC from where it came from. 
+							// (This is a special case as mentioned in the commentary above.)
+							_newRemoteDCMessageTuple.heartbeatMsgType = 4u;
+							// Send this tuple out now.
+							submit(_newRemoteDCMessageTuple, PDFRDC);
+						}
+						
+						return;
+					}
+
+					rstring fileName = _dataSnapshotStorageDirectory + "/" + 
+						_remoteDCMessageTuple.dataCenterOrigin + 
+						"-" + _remoteDCMessageTuple.dataSnapshotOrigin + ".snapshot";
+					mutable int32 rc = 0;
+					
+					// Check if it is a heartbeat message with a zero length data snapshot.
+					if (_remoteDCMessageTuple.heartbeatMsgType == 2u &&
+						blobSize(_remoteDCMessageTuple.dataSnapshot) <= 0ul) {
+						// In this case, we will delete the existing replicated
+						// data snapshot file if there is any.
+						appTrc(Trace.info, "_XXXXX_ Received the heartbeat message " +
+							(rstring)_remoteDCMessageTuple.heartbeatCnt + 
+							" with a zero length data snapshot from the data center named " +
+							 _remoteDCMessageTuple.dataCenterOrigin + ". Data snapshot origin=" + 
+							_remoteDCMessageTuple.dataSnapshotOrigin + ".", "RemoteDC-Watchdog");
+						
+						// In this case, let us delete the existing data snapshot file.
+						remove(fileName, rc);
+						
+						// Remove this file name from our local state map.
+						if (has(_remoteDataSnapshotFileNamesMap, fileName) == true) {
+							removeM(_remoteDataSnapshotFileNamesMap, fileName);
+						}
+						
+						return; 	
+					}
+					
+					if (_remoteDCMessageTuple.heartbeatMsgType == 2u &&
+							blobSize(_remoteDCMessageTuple.dataSnapshot) > 0ul) {					
+						// We have a non-zero length data snapshot sent from the
+						// remote data center that needs to be replicated in this
+						// local data center by persisting it in the pre-configured storage directory.
+						appTrc(Trace.info, "_XXXXX_ Received the heartbeat message " +
+							(rstring)_remoteDCMessageTuple.heartbeatCnt + 
+							" with a non-zero length data snapshot from the data center named " + 
+							_remoteDCMessageTuple.dataCenterOrigin + ". Data snapshot origin=" + 
+							_remoteDCMessageTuple.dataSnapshotOrigin + ".", "RemoteDC-Watchdog");
+						// Write the serialized heartbeat message combined with the 
+						// data snapshot to a file as it was received from the remote DC 
+						rc = writeBinaryDataToFile(BD.binaryPayload, fileName);
+						
+						if (rc == 0) {
+							appTrc(Trace.info, 
+								"_XXXXX_ Successfully replicated and persisted the data snapshot in this file: " +
+								fileName, "RemoteDC-Watchdog");
+							// Remember this file name in the local state of this operator.
+							// We will retrieve this file name from the local state in case
+							// the remote data center goes down later by forcing us to failover for
+							// processing the replicated data snapshot obtained earlier from 
+							// that failed remote data center.
+							insertM(_remoteDataSnapshotFileNamesMap, fileName, true);
+						} else {
+							appTrc(Trace.error, 
+								"_XXXXX_ Unable to replicate and persist the data snapshot in this file: " +
+								fileName + ". Error code=" + (rstring)rc, "RemoteDC-Watchdog");	
+	
+							// In this case, let us delete the data snapshot file.
+							// It is okay even if it returns an error.
+							remove(fileName, rc);
+							
+							// Since file write failed, remove this file name from our local state map.
+							if (has(_remoteDataSnapshotFileNamesMap, fileName) == true) {
+								removeM(_remoteDataSnapshotFileNamesMap, fileName);
+							}				
+						}
+					}
+				}
+				
+				onTuple RDCS: {
+					// In this operator, we only care about the status of the remoteDC going down.
+					if (RDCS.activeOrInactive == true) {
+						return;
+					}
+					
+					// If this local data center is operating in a passive mode,
+					// we don't have to send the remote DC's replicated 
+					// snapshot data to the external application logic. 
+					// Similarly, we should not delete the remote DC's replicated
+					// snapshot files now. We should leave them as they are since 
+					// the main application can decide to delete it when it 
+					// starts up or sends a manual command here later to 
+					// take-over the ownership of that replicated snapshot data.
+					if (_crossDCOperationMode == 0) {
+						// The local DC is in a passive operation mode.
+						return;
+					}
+					
+					// Remote DC went down just now.
+					// Now, we can failover (a.k.a switch-over or takeover) the operation of
+					// the failed remote data center by beginning to process its
+					// replicated data snapshot we have stored away.
+					// Read the data snapshot from the files we have and send it away for
+					// consumption and processing by the external application logic.
+					mutable blob myBlob = [];
+					
+					for (rstring fileName in _remoteDataSnapshotFileNamesMap) {
+						myBlob = (blob)[];
+						mutable int32 rc = readBinaryDataFromFile(myBlob, fileName);
+						
+						if (rc != 0) {
+							appTrc(Trace.error,
+								"_XXXXX_ Unable to read the binary data snapshot from this file: " +
+								fileName + ". Error code=" + (rstring)rc, "RemoteDC-Watchdog");					
+						} else {
+							if (blobSize(myBlob) > 0ul) {
+								// Convert this blob to tuple now.
+								_remoteDCMessageTuple = (HeartbeatMessageType){};
+								deserializeTuple(_remoteDCMessageTuple, myBlob);
+								// Send this tuple out now.
+								submit(_remoteDCMessageTuple, PDFRDC);
+							} else {
+								appTrc(Trace.error,
+									"_XXXXX_ Skipping the zero length binary data snapshot file: " +
+									fileName + ".", "RemoteDC-Watchdog");					
+							}
+						}
+						
+						// Delete this file since we are done with this data snapshot file.
+						remove(fileName, rc);
+					}
+					
+					// Since we made use of all the data snapshot files for switching over to
+					// (a.k.a failing over or taking over) this local data center,
+					// we can empty this map.
+					clearM(_remoteDataSnapshotFileNamesMap);
+				}
+				
+				onTuple SM: {
+		 			// This is a special message received from the external application.
+		 			// If it is a valid message, let us process it here.
+		 			if (SM.msg == "OrderlyShutdown") {
+		 				_localDCIsBeingShutdownInAnOrderlyManner = true;
+		 			}
+				}
+			
+			config
+				threadedPort: queue(BD, Sys.Wait, 40);
+				
+		}
+		
+		// This operator will read all the existing remote DC snapshot files and
+		// send that data to the external application's operators for processing.
+		// After that, it will delete those files. This can be initiated via an
+		// app config setting to do it at the local DC's startup or on demand via
+		// a special message sent from the external application (e-g: SendMeDataFromSnapshotFiles).
+		(stream<HeartbeatMessageType> ProcessDataFromRemoteDC2 as PDFRDC) 
+			as SendSnapshotFilesData = Custom(ProcessDataFromSnapshotFiles as PDFSS) {
+			logic
+				state: {
+					rstring _dataSnapshotStorageDirectory = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotStorageDirectoryKey, $dataSnapshotStorageDirectory);		 			
+					mutable HeartbeatMessageType _remoteDCMessageTuple = {};
+				}
+				
+				onTuple PDFSS: {
+ 					mutable list<rstring> snapshotFileNamesList = [];
+ 					int32 fileCnt = get_file_names_in_a_directory(
+ 						_dataSnapshotStorageDirectory,
+						".snapshot", snapshotFileNamesList);
+					mutable blob myBlob = [];
+ 					
+ 					if (fileCnt > 0) {
+ 						// We can read and send the replicated old data snapshot data we have
+ 						// stored in the local DC to the external application for processing.
+ 						for (rstring tempFileName in snapshotFileNamesList) {
+							rstring fileName = _dataSnapshotStorageDirectory + 
+								"/" + tempFileName;
+							myBlob = (blob)[];
+							mutable int32 rc = readBinaryDataFromFile(myBlob, fileName);
+							
+							if (rc != 0) {
+								appTrc(Trace.error,
+									"_XXXXX_ Unable to read the binary data snapshot from this file: " +
+									fileName + ". Error code=" + (rstring)rc, "SendSnapshotFilesData");					
+							} else {
+								if (blobSize(myBlob) > 0ul) {
+									// Convert this blob to tuple now.
+									_remoteDCMessageTuple = (HeartbeatMessageType){};
+									deserializeTuple(_remoteDCMessageTuple, myBlob);
+									// Send this tuple out now.
+									submit(_remoteDCMessageTuple, PDFRDC);
+								} else {
+									appTrc(Trace.error,
+										"_XXXXX_ Skipping the zero length binary data snapshot file: " +
+										fileName + ".", "SendSnapshotFilesData");					
+								}
+							}
+							
+							// Delete this file since we are done with this data snapshot file.
+							remove(fileName, rc);
+		 				} // End of the for loop.
+		 			} // End of if (fileCnt > 0)
+				} // End of onTuple PDFSS
+		}
+		
+		// This operator simply sends two similar input streams into one output stream.
+		(stream<HeartbeatMessageType> ProcessDataFromRemoteDC as PDFRDC)
+			as RemoteDCDataMerger = Functor(ProcessDataFromRemoteDC1, ProcessDataFromRemoteDC2) {
+			param
+				filter: true;	
+		}
+		// === END OF THE REMOTE DATA CENTER HEARTBEAT and DATASNAPSHOT RECEIVING LOGIC ===
+} // End of the CrossDataCenterFailover composite.

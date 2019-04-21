@@ -1,0 +1,278 @@
+/*
+===================================================
+# Licensed Materials - Property of IBM
+# Copyright IBM Corp. 2018, 2019
+# US Government Users Restricted Rights - Use, duplication or
+# disclosure restricted by GSA ADP Schedule Contract with
+# IBM Corp.
+===================================================
+*/
+/*
+===================================================
+First created on: Oct/05/2018
+Last modified on: Apr/19/2019
+
+This example showcases how the Cross Data Center Failover
+can be achieved for a given IBM Streams application. Since the
+concepts are somewhat advanced in nature, you are encouraged to
+do your own detailed understanding of how this application works.
+Alternatively, you can ask an IBM Streams specialist to
+explain how this application is put together to work across
+two data centers in a fail-safe manner. 
+
+This is an example packaged inside the streamsx.crossdc-failover
+IBM Streams toolkit. That toolkit is a reusable asset that can be
+made as a dependency in the other IBM Streams application 
+projects in order to perform the following primary tasks.
+
+1) It can be used to exchange heartbeat messages 
+between the identical copies of the application logic  
+running in different data centers.
+
+2) It exchanges application-specific in-memory 
+data snapshot between the identical copies of a given 
+application logic running in different data centers.
+In essence, it does a persistence based cross data center
+replication of the in-memory state maintained by the 
+external applications. This data replication is needed 
+for the operational continuity when one of the 
+data centers goes down in a planned or unplanned manner.
+
+3) It detects a remote data center's failure or down or 
+unresponsive status by watching for a pre-configured number of
+consecutive hearbeat misses from that remote data center.
+
+4) It notifies the external application logic whenever a 
+remote data center's status transition occurs from being 
+DOWN to UP or UP to DOWN.
+
+5) Upon detecting a remote data center failure, it signals the
+external application logic to take over the remote data center's
+replicated data snapshot and apply the necessary 
+processing/application logic to that data.
+
+6) Details discussed above are for two data centers working in
+active-active mode i.e. two copies of the same application
+actively processing data in both DCs. This toolkit can also be
+used for active-passive (or active-standby) mode in which
+one DC is actively processing data and the other DC is simply
+running some code similar to this toolkit's test driver code below 
+as a standalone application with the second copy of the 
+application not at all executing the required business logic other than
+simply monitoring the status of the remote DC's active/inactive status.
+In this case, this stub application running in standalone mode will 
+ignore any data snapshot signals. Whenever it gets a notification about
+the remote active DC failure, this stub application will
+simply launch a shell script to do "streamtool submitjob" of the
+actual application in distributed mode. At that point, the
+standalone stub application code can be stopped either within
+that shell script or by some other means.
+ 
+This particular example project shows how to run the 
+passive side of the active/passive CrossDC pair.
+
+The CrossDataCenterFailOver composite used in this example application is
+the main reusable asset that can be directly used in other
+external IBM Streams applications by making the 
+com.ibm.streamsx.crossdc-failover project as a dependency. 
+
+To illustrate the use of the CrossDataCenterFailover 
+composite, the test driver code below shows how to 
+perform the main tasks described above in a passive mode. Any application
+trying to apply the cross DC failover technique available
+in this project can simply use the following test driver code
+as a reference.
+
+Following steps will show you how to start an active/passive pair
+in two different data centers and then bring down DC1 so that the
+fail-over can happen in DC2.
+
+a) You can refer to the CrossDataCenterFailoverSample to 
+   run that example in active mode in DC1.
+   i.e. Run it in distributed mode by configuring it to either do the
+   periodic snapshot exchange with this passive side or not do the
+   periodic snapshot exchange with this passive side. Periodic
+   snapshot exchange is optional and it is configurable.
+
+b) Run this particular example in standalone mode in DC2 to do a 
+   passive role of monitoring the remote DC1's active or inactive status.
+   e-g: ./standalone configFileName=/homes/hny5/sen/dc2-passive-crossdc-config.txt shellScriptName=/homes/hny5/sen/dc2-crossdc-failover.sh
+
+c) After running the active/passive (active in DC1/standby in DC2) pair for 10 minutes,
+   you can cancel the job running in distributed mode on the active side (in DC1). 
+
+d) As soon as the DC1 goes down after step c, this passive mode
+   standalone application will get notification about it.
+   On receiving the "Remote DC Down" status notification, this
+   standalone application will launch a pre-configured shell script to
+   start a new copy of the CrossDataCenterFailoverSample application in
+   distributed mode here in DC2. After launching the main application in
+   active mode, the shell script will stop the passive mode standalone
+   application.
+=================================================== 
+*/
+namespace com.ibm.streamsx.crossdc.failover.passive.sample;
+
+// Any application that wants to use the CrossDataCenterFailover technique must
+// have this use statement to access the required types and functions.
+use com.ibm.streamsx.crossdc.failover.types::*;
+use com.ibm.streamsx.crossdc.failover::*;
+
+composite CrossDataCenterFailoverPassiveSample {
+	param
+		// Since this (passive mode) application is going to run as 
+		// standalone, a fully qualified valid cross DC 
+		// config file name must be given while starting the application.
+		// This application running as standalone will not be
+		// able to read the configuration details from the IBM Streams
+		// app config facility.
+		//
+		// For a sample config file, you can take a look at the
+		// streamsx.crossdc-failover toolkit's etc/crossdc-config.txt file.
+		expression<rstring> $configFileName : 
+			getSubmissionTimeValue("configFileName");
+
+		// User must provide a fully qualified shell script name.
+		// When the Remote DC goes down, that shell script will be launched.
+		// In that shell script, user can have the necessary valid 
+		// commands to start the required IBM Streams application to 
+		// do the necessary fail-over thereby providing operational continuity.
+		//
+		// For a sample shell script, you can take a look at the
+		// streamsx.crossdc-failover toolkit's etc/crossdc-failover.sh file.
+		expression<rstring> $shellScriptName : 
+			getSubmissionTimeValue("shellScriptName");
+		
+		expression<float64> $timerTickPeriod :
+			(float64)getSubmissionTimeValue("timerTickPeriod", "60.0");
+
+		// This parameter is here for testing purposes.
+		// This may generate a compiler warning which is not serious.
+		// This value will get overwritten later by the actual 
+		// value specified in the configuration file.
+		expression<rstring> $localDataCenterName : "dc2";
+		// Since this application should run in passive mode, set the
+		// default operation mode to 0.
+		expression<int32> $crossDCOperationMode : 0;
+
+		// All the required cross DC config file key names are declared as constants here.
+		expression<rstring> $localDataCenterNameKey : "localDataCenterName";
+		expression<rstring> $crossDCOperationModeKey : "crossDCOperationMode";
+
+	graph
+		// ===== Start of integrating with the CrossDCFailover Composite =====
+		// Any application that wants to make use of the
+		// CrossDataCenterFailover technique explained above must
+		// invoke the following reusable composite.
+		(stream<HeartbeatMessageType> DataSnapshotSignal;
+		 stream<RemoteDataCenterStatusType> RemoteDataCenterStatus;
+		 stream<HeartbeatMessageType> ProcessDataFromRemoteDC) as CrossDCFailover = 
+		 CrossDataCenterFailover(SerializedDataSnapshotMessage; SpecialMessage) {
+		 	param
+		 		configFileName: $configFileName;	 
+		 }
+
+		// As you can see above, the CrossDCFailover composite has its own
+		// input streams and output streams all of which will be used by one or 
+		// more operators in this application.	
+		//
+		// At this point, application code can consume the tuples coming via the
+		// output streams of the CrossDCFailover layer and application code feed
+		// into the input streams of the CrossDCFailover layer as needed.
+		//
+		// ===== End of integrating with the CrossDCFailover Composite =====		
+
+		(stream<boolean x> TimerSignal as TS) as TimerSignalGenerator = Beacon() {
+			param
+				period: $timerTickPeriod;				
+		}
+
+
+		// Since we are running here in passive mode as a standalone application,
+		// we are only interested in the RemoteDataCenterStatus stream to see if the
+		// remote DC went down. All other input and output streams to and from the 
+		// CrossDataCenterFailover composite can be ignored in our passive mode of operation here.
+		// If properly configured, the above-mentioned CrossDCFailover composite
+		// can also keep collecting the periodic snapshots from the remote DC.
+		// When this passive mode application detects a remote DC failure and
+		// starts the real application on this local DC via a shell script,
+		// there are ways to make that real application to take over the
+		// remote DC's state stored in those periodic snapshots. Read the 
+		// crossdc-failover toolkit documentation or ask an 
+		// IBM Streams specialist about how to do that.
+		(stream<BinaryPayloadType> SerializedDataSnapshotMessage as SDSM;
+		 stream<SpecialMessageType> SpecialMessage as SM) 
+			as SomeApplicationLogic = 
+			Custom(TimerSignal as TS; 
+			DataSnapshotSignal as DSS; RemoteDataCenterStatus as RDCS; 
+			ProcessDataFromRemoteDC as PDFRDC) {
+			logic
+				state: {
+					rstring _localDataCenterName = 
+						readValueFromConfigFile($configFileName, 
+						$localDataCenterNameKey, $localDataCenterName);	
+		 			int32 _crossDCOperationMode = 
+						(int32)readValueFromConfigFile($configFileName, 
+						$crossDCOperationModeKey, (rstring)$crossDCOperationMode);
+					mutable rstring _remoteDCStatus = "First contact not yet made.";		
+				}
+
+				onTuple TS: {
+					rstring operationMode = 
+						(_crossDCOperationMode == 1 ? "Active" : "Passive");
+					appTrc(Trace.error, "Local Data Center=" + _localDataCenterName +
+						", Local DC Operation Mode=" + operationMode +
+						", Remote DC Status=" + _remoteDCStatus); 
+				}
+				
+				onTuple DSS: {
+					// We are running in passive mode.
+					// So, we have no data snapshot messages to send to the remote DC.
+					appTrc(Trace.error, "Received a Data Snapshot Signal: " + (rstring)DSS);
+					return;
+				}
+				
+				// This is remote data center status notification whenever it
+				// either goes down or comes back live.
+				onTuple RDCS: {
+					mutable rstring statusMsg = "";
+					
+					if (RDCS.activeOrInactive == true) {
+						statusMsg = "coming up and running normally";
+						_remoteDCStatus = "Up and running.";
+					} else {
+						statusMsg = "going down due to failure or planned maintenance";
+						_remoteDCStatus = "Down and not running.";
+					}
+					
+					appTrc(Trace.error, "Received a notification about the remote data center " +
+						statusMsg + ".", "Application_Logic");
+						
+					// A real life application can do other tasks based on this
+					// remote data center status notification (UP or DOWN status).
+					//
+					// Since we are running in a passive mode, let us check the remote DC status.
+					// If it went down, we can go ahead and launch the user specified 
+					// shell script to start the main application to do the DC fail-over.
+					// That shell script will start the Streams application in 
+					// distributed mode. Then, that shell script will also stop this
+					// passive mode standalone application which is no longer required in this local DC.
+					if (RDCS.activeOrInactive == false) {
+						// This C++ native function is available within the
+						// streamsx.crossdc-failover toolkit. We can simply call it here.
+						launch_app($shellScriptName);
+					}
+				}
+				
+				onTuple PDFRDC: {
+					// We are running in passive mode.
+					// So, we have no way to take over and process Remote DC's data here.
+					appTrc(Trace.error, "Received a tuple to Process Data From RemoteDC: " + 
+						(rstring)PDFRDC);
+					return;				
+				}
+		}
+
+		
+
+}

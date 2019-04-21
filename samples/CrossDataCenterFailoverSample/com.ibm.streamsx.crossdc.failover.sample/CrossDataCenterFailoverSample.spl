@@ -1,0 +1,471 @@
+/*
+===================================================
+# Licensed Materials - Property of IBM
+# Copyright IBM Corp. 2018, 2019
+# US Government Users Restricted Rights - Use, duplication or
+# disclosure restricted by GSA ADP Schedule Contract with
+# IBM Corp.
+===================================================
+*/
+/*
+===================================================
+First created on: Oct/05/2018
+Last modified on: Apr/19/2019
+
+This example showcases how the Cross Data Center Failover
+can be achieved for a given IBM Streams application. Since the
+concepts are somewhat advanced in nature, you are encouraged to
+do your own detailed understanding of how this application works.
+Alternatively, you can ask an IBM Streams specialist to
+explain how this application is put together to work across
+two data centers in a fail-safe manner. 
+
+This is an example packaged inside the streamsx.crossdc-failover
+IBM Streams toolkit. That toolkit is a reusable asset that can be
+made as a dependency in the other IBM Streams application 
+projects in order to perform the following primary tasks.
+
+1) It can be used to exchange heartbeat messages 
+between the identical copies of the application logic  
+running in different data centers.
+
+2) It exchanges application-specific in-memory 
+data snapshot between the identical copies of a given 
+application logic running in different data centers.
+In essence, it does a persistence based cross data center
+replication of the in-memory state maintained by the 
+external applications. This data replication is needed 
+for the operational continuity when one of the 
+data centers goes down in a planned or unplanned manner.
+
+3) It detects a remote data center's failure or down or 
+unresponsive status by watching for a pre-configured number of
+consecutive hearbeat misses from that remote data center.
+
+4) It notifies the external application logic whenever a 
+remote data center's status transition occurs from being 
+DOWN to UP or UP to DOWN.
+
+5) Upon detecting a remote data center failure, it signals the
+external application logic to take over the remote data center's
+replicated data snapshot and apply the necessary 
+processing/application logic to that data.
+
+6) Details discussed above are for two data centers working in
+active-active mode i.e. two copies of the same application
+actively processing data in both DCs. This toolkit can also be
+used for active-passive (or active-standby) mode in which
+one DC is actively processing data and the other DC is simply
+running some code similar to this toolkit's test driver code below 
+as a standalone application with the second copy of the 
+application not at all executing the required business logic other than
+simply monitoring the status of the remote DC's active/inactive status.
+(Please refer to another sample project named CrossDataCenterFailoverPassiveSample.)
+In this case, this stub application running in standalone mode will 
+ignore any data snapshot signals. Whenever it gets a notification about
+the remote active DC failure, this stub application will
+simply launch a shell script to do "streamtool submitjob" of the
+actual application in distributed mode. At that point, the
+standalone stub application code can be stopped either within
+that shell script or by some other means.
+
+The CrossDataCenterFailOver composite used in this example application is
+the main reusable asset that can be directly used in other
+external IBM Streams applications by making the 
+com.ibm.streamsx.crossdc-failover project as a dependency. 
+
+To illustrate the use of the CrossDataCenterFailover 
+composite, the test driver code below shows how to 
+perform the main tasks described above. Any application
+trying to apply the cross DC failover technique available
+in this project can simply use the following test driver code
+as a reference. 
+
+IMPORTANT DETAIL THAT NEEDS ATTENTION
+-------------------------------------
+Please note that this test application shows
+how to use the CrossDataCenterFailover facility in external
+applications that has no need to do consistent region. 
+(If your application has a need to do consistent region, 
+then you can refer to the other example named
+CrossDataCenterFailoverCRSample available in this toolkit directory.)
+
+This test driver code below  uses four C++ native functions 
+named serializeTuple to serialize a tuple into binary payload,  
+deserializeTuple to deserialize a given blob into a tuple, 
+serializeDataItem to serialize any data item made of 
+any SPL type into a blob and deserializeDataItem to deserialize a
+given blob into its original data item made of any SPL type.
+These C++ native functions are defined in the crossdc-failover toolkit.
+[Look inside the impl/include/Functions.h and 
+in the com.ibm.crossdc.failover/native.function/function.xml
+files for the C++ code and the XML function model respectively.]
+
+A given external application must also ensure that the
+composite parameters specified in the CrossDataCenterFailover
+composite are configured correctly either in the Streams app config facility or
+in a user defined config file.
+
+In summary, any application that has a need to do cross DC failover can
+simply make the crossdc-failover toolkit as a dependency and then start
+using the CrossDataCenterFailover composite present in that
+toolkit. It is necessary for the application owners to
+understand the example code below to learn how to 
+make use of the cross data center fail-over technique implemented here.
+
+One way to test this example application code below:
+1)  Create a Streams domain d1 with one machine (m1) in it.
+2)  Create a Streams instance i1 on domain d1.
+3)  Start domain d1 and the instance i1.
+4)  Create the necessary app config or a text based config file for domain d1 and instance i1 
+    (as shown in the streamsx.crossdc-failover toolkit's etc/make-crossdc-appconfig.sh or etc/crossdc-config.txt file.)
+5)  Create a Streams domain d2 with one machine (m2) in it.
+6)  Create a Streams instance i2 on domain d2.
+7)  Start domain d2 and the instance i2.
+8)  Create the necessary app config or a text based config file for domain d2 and instance i2 
+    (as shown in the streamsx.crossdc-failover toolkit's etc/make-crossdc-appconfig.sh or etc/crossdc-config.txt file.)
+9)  You can think of d1-i1 as Data Center 1 and the other d2-i2 pair as Data Center 2.
+10) Compile this application (either in Streams Studio or using the supplied Makefile).
+11) Submit this application (job) on domain d1 and instance i1 with this option: -C tracing=info
+    While testing the example code below, setting the trace level to info will write many
+    cross DC failover operational log messages in the PE log files. That will help in understanding the
+    inner workings of the CrossDataCenterFailover composite.
+12) Submit this application (job) on domain d2 and instance i2 with this option: -C tracing=info
+13) Let it run for seventeen minutes. Keep checking the PE log files for 
+    various log messages showing heartbeat exchanges and
+    data snapshot replications in both the running jobs.
+14) Now simulate a failure on Data Center 2 by either stopping the 
+    job running on the d2-i2 pair or by forcefully stopping the domain d2 itself.
+    --> streamtool canceljob -d d2 -i i2 <YOUR_JOB_ID>
+    --> streamtool stopdomain -d d2 --force
+15) Now, verify in the d1-i1 PE log files for log messages that
+    show the failover (a.k.a switchover) taking place along with the
+    operational continuity by processing the replicated data from the failed d2-i2 pair.
+    In the job log directory of the d1-i1 pair, you can simply 
+    grep -i _XXXXX_ * to see the operational log messages.
+
+16) At this time, you can bring up the d2-i2 pair for DC2, start the application and
+    let it run for another 10 minutes. Now, you can fail the d1-i1 pair for DC1 and verify
+    how DC2 takes over the replicated data from DC1 and continues the operation.
+    
+17) Once the previous step is completed, you can now do a forceful stop of 
+    both the d1-i1 and d2-i2 pairs. That completes this test.
+
+If you want to run one DC in active mode and the other DC in passive mode, you can
+do that as well. Please refer to the CrossDataCenterFailoverPassiveSample.
+
+[YOU CAN READ MORE DETAILED COMMENTARY AVAILABLE IN THE 
+ CrossDataCenterFailover.spl file of the streamsx.crossdc-failover toolkit.]
+===================================================
+*/
+namespace com.ibm.streamsx.crossdc.failover.sample;
+
+// Any application that wants to use the CrossDataCenterFailover technique must
+// have this use statement to access the required types and functions.
+use com.ibm.streamsx.crossdc.failover.types::*;
+use com.ibm.streamsx.crossdc.failover::*;
+
+// This is a specific example that shows how to use the CrossDCFailover toolkit in
+// an external application that does not do consistent region checkpointing.
+composite CrossDataCenterFailoverSample {
+	param
+ 		// If you have specified the crossDC config details for this 
+ 		// application via the app config facility, then pass an empty string.
+ 		// Otherwise, specify a fully qualified name of a text based 
+ 		// crossDC configuration file.
+ 		// If you have both the IBM Streams cross dc app config and 
+ 		// the text based cross dc config file present, then the config values
+		// specified in this file will take precedence over the ones 
+		// configured in the app config facility.
+		//
+		// For a sample config file, you can take a look at the
+		// streamsx.crossdc-failover toolkit's etc/crossdc-config.txt file.
+		expression<rstring> $configFileName :
+			getSubmissionTimeValue("configFileName", "");
+
+		// This parameter is here for testing purposes.
+		// This may generate a compiler warning which is not serious.
+		expression<rstring> $localDataCenterName : 
+			getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_localDataCenterName", "dc1");
+
+		// All the required cross DC config file key names are declared as constants here.
+		expression<rstring> $localDataCenterNameKey : "localDataCenterName";
+			
+	type
+		// This schema is here for the internal testing of
+		// the CrossDataCenterFailover composite in the context of
+		// the example logic shown below in this file.
+		// In the other real-life external applications, they will
+		// have their own application-specific stream schema.
+		MyDataType = rstring s1, int32 i1, float64 f1, boolean b1;
+			
+	graph
+		// ===== Start of integrating with the CrossDCFailover Composite =====
+		// Any application that wants to make use of the
+		// CrossDataCenterFailover technique explained above must
+		// invoke the following reusable composite.
+		(stream<HeartbeatMessageType> DataSnapshotSignal;
+		 stream<RemoteDataCenterStatusType> RemoteDataCenterStatus;
+		 stream<HeartbeatMessageType> ProcessDataFromRemoteDC) as CrossDCFailover = 
+		 CrossDataCenterFailover(SerializedDataSnapshotMessage; SpecialMessage) {
+		 	param
+		 		configFileName: $configFileName;	 
+		 }
+
+		// As you can see above, the CrossDCFailover composite has its own
+		// input streams and output streams all of which will be used by one or 
+		// more operators in this application.	
+		//
+		// At this point, application code can consume the tuples coming via the
+		// output streams of the CrossDCFailover layer and application code feed
+		// into the input streams of the CrossDCFailover layer as needed.
+		//
+		// ===== End of integrating with the CrossDCFailover Composite =====		
+		
+		// Regular application code/logic starts from here.		 		 		
+		// This operator generates application specific test data to 
+		// verify the cross data center failover logic.
+		(stream<MyDataType> MyTestData as MTD) as TestDataGenerator = Beacon() {
+			logic
+				state: {
+					rstring _localDataCenterName = 
+						readValueFromConfigFile($configFileName, 
+						$localDataCenterNameKey, $localDataCenterName);					
+				}
+				
+			param
+				period: 12.0;
+				
+			output
+				// Populate random values.
+				MTD: s1 = _localDataCenterName + "_" + 
+					(rstring) (IterationCount() + 1ul) + "_" + (rstring)getSeconds(getTimestamp()),
+					i1 = (int32) (IterationCount() + 1ul),
+					f1 = random() * 0.824,
+					b1 = ((int32)(IterationCount() + 1ul) % 2 == 0) ? true : false;
+		}
+	
+		// This operator mimics some of the in-memory state keeping tasks as it
+		// will be done in a real-life external application that will use the
+		// cross data center failover technique implemented in this project.
+		// Inside an external application that wants to make use of the cross DC failover
+		// technique from this project, it is necessary to add the three input streams and 
+		// one output stream as indicated below in addition to the other
+		// input/output streams that external application may already have.
+		@parallel(width=5, broadcast=[DSS, RDCS, PDFRDC])
+		(stream<BinaryPayloadType> SerializedDataSnapshotMessage as SDSM) as SomeApplicationLogic = 
+			Custom(MyTestData as MTD; DataSnapshotSignal as DSS; 
+			RemoteDataCenterStatus as RDCS; ProcessDataFromRemoteDC as PDFRDC) {
+			logic
+				state: {
+					// An application-specific state variable to hold a map of tuples.
+					mutable map<rstring, MyDataType> _myDataMap = {};
+				}
+				
+				onTuple MTD: {
+					// In a real life application, there will be a very detailed logic here.
+					// We will simply insert it in the state map variable and leave it there.
+					// This is the in-memory state map that needs to be replicated to the
+					// remote data center at routine intervals.
+					insertM(_myDataMap, MTD.s1, MTD);
+				}
+				
+				onTuple DSS: {
+					// The logic required below is simple. Most of it is a 
+					// lot of commentary for the purpose of explaining the details.
+					// This is the signal that acts as a reminder for the application
+					// logic to take a snapshot of its internal state data and send/replicate it
+					// to the remote data center. In case if this local data center
+					// experiences any outage, that will enable the remote data center to
+					// detect the failure/down status of this local data center and
+					// to start owning and processing the replicated data.
+					// The incoming tuple here already has two of its attributes
+					// populated (heartbeatCnt and dataCenterOrigin). The application logic
+					// has to simply set the other two attributes present in the 
+					// incoming tuple. So, serialize the state map and set the 
+					// dataSnapshot attribute. 
+					serializeDataItem(_myDataMap, DSS.dataSnapshot);
+					
+					// It is necessary to set another attribute which is an
+					// external application-specific arbitrary string that
+					// can uniquely identify which part of the external application is  
+					// serializing its internal state data into a binary data snapshot 
+					// to be sent to the remote data center for replication.
+					// For example, this string could be an operator name or 
+					// a parallel channel number in a UDP region etc.
+					DSS.dataSnapshotOrigin = (rstring)getChannel();
+					
+					// We will serialize this entire tuple containing four different attributes.
+					mutable BinaryPayloadType oTuple = {};
+					serializeTuple(DSS, oTuple.binaryPayload);
+
+					// Send it away to the CrossDataCenterFailover composite which in turn
+					// will send it to the remote data center as part of its 
+					// periodic heartbeat message exchange.
+					submit(oTuple, SDSM);
+					appTrc(Trace.info, "_XXXXX_ UDP channel " + (rstring)getChannel() +
+						"-->Submitted a data snapshot to be sent to the " +
+						"remote data center for replication.", "Application_Logic");
+				}
+				
+				// This is remote data center status notification whenever it
+				// either goes down or comes back live.
+				onTuple RDCS: {
+					mutable rstring statusMsg = "";
+					
+					if (RDCS.activeOrInactive == true) {
+						statusMsg = "coming up and running normally";
+					} else {
+						statusMsg = "going down due to failure or planned maintenance";
+					}
+					
+					appTrc(Trace.info, "_XXXXX_ UDP channel " + (rstring)getChannel() +
+						"-->Received a notification about the remote data center " +
+						statusMsg + ".", "Application_Logic");
+						
+					// A real life application can do other tasks based on this
+					// remote data center status notification (UP or DOWN status).
+				}
+				
+				onTuple PDFRDC: {
+					// This data tuple can arrive here for two reasons.
+					// 1) When the remote data center failure is detected, 
+					//    periodic data snapshots received from the remote DC will be
+					//    sent here for the remote data center fail-over.
+					//    This is the normal case majority of the time.
+					//
+					// 2) Very rarely, there is a chance for both the data centers to
+					//    go down at the same time. In this case, when both the data centers
+					//    are brought back up, users can do the necessary configuration for
+					//    each DC to send its stored data snapshots to the other DC to which
+					//    that data belongs. That is another case where we will receive
+					//    tuples via this particular stream. Read the commentary either
+		 			//    in the param clause of CrossDataCenterFailover.spl file or 
+		 			//    in the schema SPL file.
+		 			//
+					// The remote data center has failed. Hence, the snapshot data that got
+					// replicated from the remote DC to this local DC is now being routed here
+					// to get processed. Let us add them to our local state map for
+					// further processing. We will do this activity only if this 
+					// data snapshot originated from a similar operator with the
+					// same UDP channel number in the remote data center. 
+					// If this condition is not met, let us ignore this tuple.
+					if (PDFRDC.dataSnapshotOrigin != (rstring)getChannel()) {
+						// The data snapshot origin identity doesn't match with the
+						// identity of this particular instance of this operator.
+						// Some other matching instance of this operator will 
+						// accept this replicated data snapshot and process it.
+						// We will ignore it here.
+						return;
+					}
+					
+					// Deserialize the data snapshot blob into a map.
+					mutable map<rstring, MyDataType> myMap = {};
+					deserializeDataItem(myMap, PDFRDC.dataSnapshot);
+					mutable rstring msg = "";
+					
+					// Now we can iterate over the map and add its 
+					// contents to our own state map for processing it later.
+					for (rstring key in myMap) {
+						msg = "-->Taking-over the replicated data: Remote DC=";
+						
+						if (PDFRDC.heartbeatMsgType == 4u) {
+							// This is not a remote DC fail-over. Instead, the 
+							// other rare special case (2) explained above in the commentary.
+							msg = "-->Received the state information that existed before this DC went down. DC=";
+						}
+						
+						appTrc(Trace.info, "_XXXXX_ UDP channel " + (rstring)getChannel() +
+							msg + PDFRDC.dataCenterOrigin + ", Key=" + key +
+							", Value=" + (rstring)myMap[key], "Application_Logic");
+						insertM(_myDataMap, key, myMap[key]);
+					}
+					
+					if (PDFRDC.heartbeatMsgType == 4u) {
+						msg = "-->Completed populating the received data that existed before this " +
+							"data center went down:" + PDFRDC.dataCenterOrigin + 
+							". A total of " + (rstring)size(myMap) + 
+							" data items were populated here.";
+					} else {
+						msg = "-->Completed the taking-over of the replicated data from this " +
+							"remote data center after it went down:" + PDFRDC.dataCenterOrigin + 
+							". A total of " + (rstring)size(myMap) + 
+							" data items were taken over (failed over) for processing here.";
+					}
+					
+					appTrc(Trace.info, "_XXXXX_ UDP channel " + (rstring)getChannel() +
+						msg, "Application_Logic");
+					
+					// That is it. We have completed the failover (takeover or switchover) of
+					// the failed remote data center by absorbing its internal
+					// state information into our own internal state data structure.
+				}
+		}
+		
+		// ===== BEGIN - CODE BLOCK THAT SHOWS SPECIAL MESSAGE GENERATION ====
+		// Cross DC Failover toolkit supports a feature whereby we can inform the
+		// remote DC with some special messages such as OrderlyShutdown, 
+		// SendMeDataFromSnapshotFiles etc. OrderlyShutdown is used, when the 
+		// application on this DC is being shutdown in an orderly
+		// manner after there is no more incoming data and the application is
+		// brought to its idle (or quiesced) state. In this case, this DC is not
+		// failing abruptly. In such cases, it is necessary to inform the remote DC
+		// about the normal shutdown of this DC so that the remote DC will not
+		// mistakenly think that this DC failed in preparation for taking over any
+		// leftover state information to get processed at the remote DC by using the
+		// previously received data snapshots. Before canceling such an idle job
+		// in an orderly manner, there is a special message that needs to be sent to
+		// the remote DC in order for that remote DC to mark the status of this DC as
+		// DOWN and erase the data snapshots it received from the DC which is undergoing 
+		// an orderly shudown process. 
+		// Similarly, if the user wants to immediately read the remote DC's 
+		// data snapshot files present in this local DC, SendMeDataFromSnapshotFiles
+		// special message can be sent to the CrossDCFailover composite.
+		// Following two operators combine to show how such special messages
+		// can be generated.
+		// Receive an external signal sent from Telnet or netcat (nc) to indicate that
+		// an orderly application cancellation is going to happen. (Connect to this
+		// operator via Telnet or netcat and type OrderlyShutdown or
+		// SendMeDataFromSnapshotFiles and press Enter. Use these special messages only
+		// when they must be used under the necessary conditions. Arbitrary use of them
+		// will cause undesirable application results.
+		(stream<SpecialMessageType> SpecialMessageSignal)
+			as SpecialMessageSignalReceiver = TCPSource() {
+			param
+				role: server;
+				// To find out the actual IP address and port on which this operator is
+				// listening on, run the streamtool command below (It will work only in distributed mode).
+				// streamtool getnsentry -d <YOUR_DOMAIN> -i <YOUR_INSTANCE> --fmt %Mf  \*\* 
+				name: "SpecialMessagePort";
+		}		
+		
+		// Receive the special message signal, validate the msg and send an 
+		// appropriate special command to the remote DC. The output stream
+		// from this operator will go as an input stream into the 
+		// CrossDCFailover composite invoked at the top of this file
+		(stream<SpecialMessageType> SpecialMessage as SM)
+			as SpecialMessageSender = Custom(SpecialMessageSignal as SMS) {
+			logic
+				onTuple SMS: {
+					if (SMS.msg == "OrderlyShutdown") {
+						// Send it away to the CrossDataCenterFailover composite which in turn
+						// will send it to the remote data center as part of its 
+						// periodic heartbeat message exchange.
+						submit(SMS, SM);
+						appTrc(Trace.info, "Submitted an orderly application " +
+							"shutdown message to the remote data center.",
+							"Special_Message_Sender");						
+					} else if (SMS.msg == "SendMeDataFromSnapshotFiles") {
+						// Send it away to the CrossDataCenterFailover composite which in turn
+						// will read the data from the existing snapshot files and
+						// send them to this application's operators for processing.
+						submit(SMS, SM);
+						appTrc(Trace.info, "Submitted a special command to " +
+							"get the data stored in the snapshot files.",
+							"Special_Message_Sender");						
+					} 
+				}	
+		}
+		// ===== END - CODE BLOCK THAT SHOWS SPECIAL MESSAGE GENERATION ====
+}
