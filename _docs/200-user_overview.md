@@ -91,8 +91,8 @@ Following are the input streams into the CrossDCFailover composite operator for 
 
 **SpecialMessage**: Application logic can send special messages into the CrossDCFailover composite operator via this input stream when needed. This stream has a single rstring attribute. Following are the valid values for this attribute:
 
-*OrderlyShutdown*
-*SendMeDataFromSnapshotFiles*
+1. *OrderlyShutdown*
+2. *SendMeDataFromSnapshotFiles*
 
 Meaning for these special messages is discussed in another section.
 

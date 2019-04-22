@@ -58,10 +58,10 @@ As explained in an earlier section, application logic can send certain special m
 ## Useful CrossDC native functions
 In order to send the in-memory state for cross DC replication, application logic can call these native functions to serialize the in-memory state into a blob or deserialize a blob into the original data item.
 
-**serializeDataItem**
-**deserializeDataItem**
-**serializeTuple**
-**deserializeTuple**
+1. **serializeDataItem**
+2. **deserializeDataItem**
+3. **serializeTuple**
+4. **deserializeTuple**
 
 In a passive mode standalone monitoring application, following function is available for use to launch a shell script to start the real Streams application in order to do the failover.
 
