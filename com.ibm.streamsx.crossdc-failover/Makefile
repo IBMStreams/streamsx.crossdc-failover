@@ -22,7 +22,10 @@
 #                                                                  
 # end_generated_IBM_copyright_prolog                               
 
-JAVA_CLASS_FILES = impl/java/src/com/ibm/streamsx/crossdc/failover/HttpBlobSender.java
+JAVA_CLASS_FILES = impl/java/src/com/ibm/streamsx/crossdc/failover/HttpBlobSender.java \
+                   impl/java/src/com/ibm/streamsx/crossdc/failover/CrossDCSnapshotJdbcWriter.java \
+                   impl/java/src/com/ibm/streamsx/crossdc/failover/CrossDCSnapshotJdbcReader.java \
+                   impl/java/src/com/ibm/streamsx/crossdc/failover/CrossDCSnapshotJdbcRemover.java
 
 all: java
 

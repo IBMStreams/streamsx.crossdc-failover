@@ -10,7 +10,7 @@
 /*
 ===================================================
 First created on: Oct/08/2018
-Last modified on: Apr/21/2019
+Last modified on: May/08/2019
 
 This file contains the reusable types and SPL functions 
 used in the Cross Data Center Failover composite as well as
@@ -89,6 +89,11 @@ type HttpResponseType = int32 responseCode, rstring responseMessage;
 type HttpBinaryPayloadType = BinaryPayloadType, tuple<map<rstring, rstring> httpRequestHeaders>;
 
 type SpecialMessageType = rstring msg;
+
+type DataSnapshotRowType = rstring id, rstring replicationTime, blob snapshot;
+type DatabaseResponseType = boolean result, rstring resultMsg;
+type KeyForDatabaseReadOrDeleteType = rstring id;
+
 // =======================================================
 // Define the SPL functions here.
 // This function writes any given binary data into a specified file.
@@ -174,8 +179,9 @@ public rstring getUrlEmbeddedWithParallelChannel(rstring url, int32 channelNumbe
 }
 
 // This function will try to read and return the value for a 
-// given key from a given file. It will ignore any line 
-// starting with # which is a comment line.
+// given key from a given configuration file. This file is 
+// expected to have lines in the key=value format.
+// It will ignore any line starting with # which is a comment line.
 // If it can't read the value for any reason, it will return the
 // default value passed to this function by the caller.
 public stateful rstring readValueFromConfigFile(rstring fileName, rstring key, rstring defaultValue) {

@@ -13,7 +13,8 @@ This toolkit is designed to provide application-level failover across two data c
    
 2. In order for this toolkit to work properly, there should be network connectivity available between the two data centers. This toolkit will open HTTP connections between the two data centers with a user specified HTTP port number. So, there should be no firewall blocking this HTTP communication in both data centers.
 
-3. If the cross DC data replication option is enabled, then the replicated data will be stored in disk in both the data centers. This will require a shared/mapped drive either via NFS or NAS that can be accessed from all the IBM Streams application machines in a given data center. Depending on the size of the in-memory state held by the application logic, the total size of the shared drive in each data center should be planned ahead of time and provisioned properly.
+3. If the cross DC data replication option is enabled, then the replicated data will be stored either in a relational database table or in a file system at both the data centers. This will require access to a relational database via JDBC from the Streams application machine(s) or read/write access to a shared/mapped drive either via NFS or NAS that can be accessed from all the IBM Streams application machines in a given data center. Depending on the size of the in-memory state held by the application logic, the total size of the database or the shared drive in each data center should be planned ahead of time and provisioned properly.
+
 
 ## Example usage of this toolkit inside a Streams application
 Here is a code snippet that shows how to invoke the CrossDCFailover composite operator available in this toolkit from within an IBM Streams application:
@@ -61,6 +62,9 @@ st  submitjob  -d  <YOUR_DC2_STREAMS_DOMAIN>  -i  <YOUR_DC2_STREAMS_INSTANCE>  o
 ```
 
 ## WHATS NEW
+v1.0.1:
+- May/22/2019
+- Added support for storing the cross data center replicated data snapshots in a relational database accessible via JDBC.
 
 v1.0.0:
 - Apr/21/2019

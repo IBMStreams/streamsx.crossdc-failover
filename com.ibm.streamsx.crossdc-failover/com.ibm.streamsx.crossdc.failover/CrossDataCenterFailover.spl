@@ -10,7 +10,7 @@
 /*
 ===================================================
 First created on: Oct/06/2018
-Last modified on: Apr/19/2019
+Last modified on: May/15/2019
 
 This IBM Streams SPL composite contains the logic
 required to do the cross data center failover.
@@ -194,7 +194,28 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 			getApplicationName() + "_dataSnapshotExchangeInterval", "888888888.00");
 		expression<rstring> $dataSnapshotStorageDirectory : 
 			getApplicationConfigurationProperty("CrossDCFailover", 
-			getApplicationName() + "_dataSnapshotStorageDirectory", "/tmp/cross-dc-snapshot");
+			getApplicationName() + "_dataSnapshotStorageDirectory", "");
+		expression<rstring> $dataSnapshotJdbcUrl : 
+			getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_dataSnapshotJdbcUrl", "");
+		expression<rstring> $dataSnapshotJdbcUser : 
+			getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_dataSnapshotJdbcUser", "");
+		expression<rstring> $dataSnapshotJdbcPassword : 
+			getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_dataSnapshotJdbcPassword", "");
+		expression<rstring> $dataSnapshotJdbcDriverLib : 
+			getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_dataSnapshotJdbcDriverLib", "");
+		expression<rstring> $dataSnapshotJdbcClassName : 
+			getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_dataSnapshotJdbcClassName", "");
+		expression<rstring> $dataSnapshotTableName : 
+			getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_dataSnapshotTableName", "");
+		expression<rstring> $dataSnapshotPrimaryKeyColumnName : 
+			getApplicationConfigurationProperty("CrossDCFailover", 
+			getApplicationName() + "_dataSnapshotPrimaryKeyColumnName", "");
 		expression<boolean> $sendToAllRemoteMachines :
 			(boolean)getApplicationConfigurationProperty("CrossDCFailover", 
 			getApplicationName() + "_sendToAllRemoteMachines", "false");
@@ -277,7 +298,15 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 		expression<rstring> $remoteDataCenterApplicationMachineNamesKey : 
 			"remoteDataCenterApplicationMachineNames";
 		expression<rstring> $dataSnapshotStorageDirectoryKey :
-			"dataSnapshotStorageDirectory";
+			"dataSnapshotStorageDirectory";			
+		expression<rstring> $dataSnapshotJdbcUrlKey : "dataSnapshotJdbcUrl";
+		expression<rstring> $dataSnapshotJdbcUserKey : "dataSnapshotJdbcUser";
+		expression<rstring> $dataSnapshotJdbcPasswordKey : "dataSnapshotJdbcPassword";
+		expression<rstring> $dataSnapshotJdbcDriverLibKey : "dataSnapshotJdbcDriverLib";
+		expression<rstring> $dataSnapshotJdbcClassNameKey : "dataSnapshotJdbcClassName";
+		expression<rstring> $dataSnapshotTableNameKey : "dataSnapshotTableName";
+		expression<rstring> $dataSnapshotPrimaryKeyColumnNameKey :
+			"dataSnapshotPrimaryKeyColumnName";
 		expression<rstring> $crossDCInitDelayKey : "crossDCInitDelay";
 		expression<rstring> $heartbeatExchangeIntervalKey : "heartbeatExchangeInterval";
 		expression<rstring> $consecutiveHeartbeatMissesAllowedKey :
@@ -306,7 +335,7 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 		//    heartbeat misses to trigger the DC failover for processing
 		//    the data snapshots received thus far from the remote data center. 
 		//
-		// ========= START OF THE HEARTBEAT AND DATASNAPSHOT SENDING LOGIC =========
+		// ========= START OF THE HEARTBEAT AND DATA SNAPSHOT SENDING LOGIC =========
 		// Generate the periodic heartbeat signal. This will serve as a reminder  
 		// for a proper hearbeat message to be sent to the remote data center.
 		// Main purpose of the heartbeat is to inform that all is well at 
@@ -339,11 +368,13 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 		//    we will send a data snapshot signal to alert the application logic 
 		//    running in the other composite(s) of an external application.
 		(stream<BinaryPayloadType> SerializedHeartbeatMessage as SHM;
-		 stream<BinaryPayloadType> SerializedNonHeartbeatMessage as SNHM;
+		 stream<BinaryPayloadType> SerializedNonHeartbeatMessage1 as SNHM;
 		 stream<HeartbeatMessageType> DataSnapshotSignal as DSS;
-		 stream<boolean x> ProcessDataFromSnapshotFiles as PDFSS) as HeartbeatMessagePreparer = 
-		 	Custom(HeartbeatSignal as HS; RemoteDataCenterStatus as RDCS;
-		 	SpecialMessage as SM) {
+		 stream<boolean x> ProcessDataFromSnapshotFiles as PDFSS;
+		 stream<KeyForDatabaseReadOrDeleteType> DeleteSnapshotDBRowsOnLocalDCStartup as DSDBR;
+		 stream<KeyForDatabaseReadOrDeleteType> ReadSnapshotDBRowsOnRemoteDCFirstContact as RSDBR) 
+		 	as HeartbeatMessagePreparer = 
+		 	Custom(HeartbeatSignal as HS; RemoteDataCenterStatus as RDCS; SpecialMessage as SM) {
 		 	logic
 		 		state: {
 		 			// Different kinds of state variables needed for the logic of this operator.
@@ -352,6 +383,8 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 		 			mutable boolean _localDataCenterStartedJustNow = true;
 		 			mutable HeartbeatMessageType _heartbeatMessage = {};
 		 			mutable BinaryPayloadType _serilizedHeartbeatMessage = {};
+		 			mutable KeyForDatabaseReadOrDeleteType _deleteSnapshotDBRowsMessage = {};
+		 			mutable KeyForDatabaseReadOrDeleteType _readSnapshotDBRowsMessage = {};
 		 			mutable boolean _isRemoteDataCenterActive = false;
 		 			rstring _localDataCenterName = 
 						readValueFromConfigFile($configFileName, 
@@ -373,7 +406,10 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 						$retainOlderDataSnapshotsAtStartupKey, (rstring)$retainOlderDataSnapshotsAtStartup);		 			
 		 			boolean _sendDataSnapshotsToOriginDCAtStartup = 
 						(boolean)readValueFromConfigFile($configFileName, 
-						$sendDataSnapshotsToOriginDCAtStartupKey, (rstring)$sendDataSnapshotsToOriginDCAtStartup);		 			
+						$sendDataSnapshotsToOriginDCAtStartupKey, (rstring)$sendDataSnapshotsToOriginDCAtStartup);	
+					rstring _dataSnapshotJdbcUrl = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcUrlKey, $dataSnapshotJdbcUrl);
 		 			mutable boolean _localDCIsBeingShutdownInAnOrderlyManner = false;
 		 		}
 		 		
@@ -413,7 +449,16 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 		 				// where this appconfig value is read above in the composite param clause.
 		 				if (_retainOlderDataSnapshotsAtStartup == false &&
 		 					_sendDataSnapshotsToOriginDCAtStartup == false) {
-		 					delete_files_in_a_directory(_dataSnapshotStorageDirectory, ".snapshot");
+		 					if (_dataSnapshotStorageDirectory != "") {
+		 						// If the snapshot storage is configured to a file system path, call this function.
+		 						delete_files_in_a_directory(_dataSnapshotStorageDirectory, ".snapshot");
+		 					} else if (_dataSnapshotJdbcUrl != "") {
+		 						// If the snapshot storage is configured to an RDBMS, then 
+		 						// send this tuple to signal the deletion of all the data snapshot DB rows.
+		 						// * (an asterisk) here means delete all the rows in the DB table.
+		 						_deleteSnapshotDBRowsMessage.id = "*";
+		 						submit(_deleteSnapshotDBRowsMessage, DSDBR);
+		 					}
 		 				}
 		 			}
 		 			
@@ -502,6 +547,17 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 		 				// This is a special option we support. Read the commentary either
 		 				// in the param clause above or in the schema SPL file.
 		 				if (_sendDataSnapshotsToOriginDCAtStartup == true) {
+							if (_dataSnapshotJdbcUrl != "") {
+		 						// If the snapshot storage is configured to an RDBMS, then 
+		 						// send this tuple to signal the reading of all the 
+		 						// data snapshot DB rows to be sent to their origin DC.
+		 						// * (an asterisk) here means read all the rows present in the DB table.
+		 						_readSnapshotDBRowsMessage.id = "*";
+		 						submit(_readSnapshotDBRowsMessage, RSDBR);
+								return;
+		 					}		 				
+		 				
+		 					// It must be a file system based data snapshot storage. So, deal with the files now.
 		 					mutable list<rstring> snapshotFileNamesList = [];
 		 					int32 fileCnt = get_file_names_in_a_directory(
 		 						_dataSnapshotStorageDirectory,
@@ -645,7 +701,8 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 		// Send the serialized binary snapshot content to the remote data center.
 		@parallel(width=$numberOfHttpSenderReceiverPairs)
 		(stream<HttpResponseType> HttpPostResponse2) as CrossDataCenterSender2 = 
-			HttpBlobSender(SerializedDataSnapshotMessage, SerializedNonHeartbeatMessage) {
+			HttpBlobSender(SerializedDataSnapshotMessage, 
+				SerializedNonHeartbeatMessage1, SerializedNonHeartbeatMessage2) {
 			logic
 				state: {
 					// Base crossDC Http port is used for the 
@@ -703,9 +760,9 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 			config
 				threadedPort: queue(HPR, Sys.Wait, 40);
 		}
-		// ========= END OF THE HEARTBEAT AND DATASNAPSHOT SENDING LOGIC =========
+		// ========= END OF THE HEARTBEAT AND DATA SNAPSHOT SENDING LOGIC =========
 
-		// === START OF THE REMOTE DATA CENTER HEARTBEAT and DATASNAPSHOT RECEIVING LOGIC ===
+		// === START OF THE REMOTE DATA CENTER HEARTBEAT and DATA SNAPSHOT RECEIVING LOGIC ===
 		// We are going to have a dedicated receiver for the heartbeat messages and then a pool of
 		// parallel receivers for the data snapshot messages.
 		
@@ -929,15 +986,19 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 		// 2) It will also process remote DC messages such data snapshot (msgType=2u),
 		//    remote DC orderly shutdown (msgTupe=3u), both DCs going down and
 		//    coming back simultaneously (msgType=4u).
-		(stream<HeartbeatMessageType> ProcessDataFromRemoteDC1 as PDFRDC) as RemoteDataCenterWatchdog = 
+		(stream<HeartbeatMessageType> ProcessDataFromRemoteDC1 as PDFRDC;
+		 stream<KeyForDatabaseReadOrDeleteType> DeleteSnapshotDBRowOnRemoteDCOrderlyShutdown as DSDBR;
+		 stream<DataSnapshotRowType> InsertSnapshotDBRow as ISDBR;
+		 stream<KeyForDatabaseReadOrDeleteType> ReadSnapshotDBRowOnRemoteDCFailure as RSDBR) 
+		 	as RemoteDataCenterWatchdog = 
 			Custom(BinData2 as BD; RemoteDataCenterStatus as RDCS; SpecialMessage as SM) {
 			logic
 				state: {
 		 			// Different kinds of state variables needed for the logic of this operator.
 		 			mutable HeartbeatMessageType _remoteDCMessageTuple = {};
-		 			// We will store the names of the files where we are 
+		 			// We will store the names under which we are 
 		 			// persisting the replicated data snapshots received from the remote DC.
-		 			mutable map<rstring, boolean> _remoteDataSnapshotFileNamesMap = {};
+		 			mutable map<rstring, boolean> _remoteDataSnapshotNamesMap = {};
 		 			int32 _crossDCOperationMode = 
 						(int32)readValueFromConfigFile($configFileName, 
 						$crossDCOperationModeKey, (rstring)$crossDCOperationMode);
@@ -946,6 +1007,12 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 						$dataSnapshotStorageDirectoryKey, $dataSnapshotStorageDirectory);
 		 			mutable boolean _localDCIsBeingShutdownInAnOrderlyManner = false;
 		 			mutable RemoteDataCenterStatusType _remoteDataCenterStatus = {};
+					rstring _dataSnapshotJdbcUrl = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcUrlKey, $dataSnapshotJdbcUrl);
+					mutable KeyForDatabaseReadOrDeleteType _deleteSnapshotDBRowsMessage = {};
+					mutable DataSnapshotRowType _insertSnapshotDBRowMessage = {};
+					mutable KeyForDatabaseReadOrDeleteType _readSnapshotDBRowsMessage = {};
 				}	
 				
 				onTuple BD: {
@@ -993,14 +1060,22 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 							" from the data center named " +
 							 _remoteDCMessageTuple.dataCenterOrigin + 
 							 ".", "RemoteDC-Watchdog");
-						// Let us first delete the remote DC's replicated snapshot files we have here.
+						// Let us first delete the remote DC's replicated snapshot data we have here.
 						mutable int32 rc = 0;
-						for (rstring fileName in _remoteDataSnapshotFileNamesMap) {
-							remove(fileName, rc);
+						for (rstring name in _remoteDataSnapshotNamesMap) {
+							if (_dataSnapshotJdbcUrl != "") {
+		 						// If the snapshot storage is configured to an RDBMS, then 
+		 						// send this tuple to signal the deletion of this data snapshot DB row.
+		 						_deleteSnapshotDBRowsMessage.id = name;
+		 						submit(_deleteSnapshotDBRowsMessage, DSDBR);
+		 					} else {
+		 						// Snapshot data is stored in a file.	 				
+								remove(_dataSnapshotStorageDirectory + "/" + name + ".snapshot", rc);
+							}
 						}
 	
-						// Empty the snapshot file map.
-						clearM(_remoteDataSnapshotFileNamesMap);						
+						// Empty the snapshot names map.
+						clearM(_remoteDataSnapshotNamesMap);						
 						return;
 					}
 
@@ -1038,9 +1113,10 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 						return;
 					}
 
+					rstring dataSnapshotName = _remoteDCMessageTuple.dataCenterOrigin + 
+						"-" + _remoteDCMessageTuple.dataSnapshotOrigin; 
 					rstring fileName = _dataSnapshotStorageDirectory + "/" + 
-						_remoteDCMessageTuple.dataCenterOrigin + 
-						"-" + _remoteDCMessageTuple.dataSnapshotOrigin + ".snapshot";
+						dataSnapshotName + ".snapshot";
 					mutable int32 rc = 0;
 					
 					// Check if it is a heartbeat message with a zero length data snapshot.
@@ -1054,12 +1130,19 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 							 _remoteDCMessageTuple.dataCenterOrigin + ". Data snapshot origin=" + 
 							_remoteDCMessageTuple.dataSnapshotOrigin + ".", "RemoteDC-Watchdog");
 						
-						// In this case, let us delete the existing data snapshot file.
-						remove(fileName, rc);
+						if (_dataSnapshotJdbcUrl != "") {
+	 						// If the snapshot storage is configured to an RDBMS, then 
+	 						// send this tuple to signal the deletion of this data snapshot DB row.
+	 						_deleteSnapshotDBRowsMessage.id = dataSnapshotName;
+	 						submit(_deleteSnapshotDBRowsMessage, DSDBR);
+	 					} else {
+							// In this case, let us delete the existing data snapshot file.
+							remove(fileName, rc);
+						}
 						
-						// Remove this file name from our local state map.
-						if (has(_remoteDataSnapshotFileNamesMap, fileName) == true) {
-							removeM(_remoteDataSnapshotFileNamesMap, fileName);
+						// Remove this snapshot name from our local state map.
+						if (has(_remoteDataSnapshotNamesMap, dataSnapshotName) == true) {
+							removeM(_remoteDataSnapshotNamesMap, dataSnapshotName);
 						}
 						
 						return; 	
@@ -1075,33 +1158,50 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 							" with a non-zero length data snapshot from the data center named " + 
 							_remoteDCMessageTuple.dataCenterOrigin + ". Data snapshot origin=" + 
 							_remoteDCMessageTuple.dataSnapshotOrigin + ".", "RemoteDC-Watchdog");
-						// Write the serialized heartbeat message combined with the 
-						// data snapshot to a file as it was received from the remote DC 
-						rc = writeBinaryDataToFile(BD.binaryPayload, fileName);
-						
-						if (rc == 0) {
-							appTrc(Trace.info, 
-								"_XXXXX_ Successfully replicated and persisted the data snapshot in this file: " +
-								fileName, "RemoteDC-Watchdog");
-							// Remember this file name in the local state of this operator.
-							// We will retrieve this file name from the local state in case
+							
+						if (_dataSnapshotJdbcUrl != "") {
+	 						// If the snapshot storage is configured to an RDBMS, then 
+	 						// send this tuple to signal the insertion of this data snapshot DB row.
+	 						_insertSnapshotDBRowMessage.id = dataSnapshotName;
+	 						_insertSnapshotDBRowMessage.replicationTime = ctime(getTimestamp());
+	 						_insertSnapshotDBRowMessage.snapshot = BD.binaryPayload;
+	 						submit(_insertSnapshotDBRowMessage, ISDBR);
+
+							// Remember this snapshot name in the local state of this operator.
+							// We will retrieve this from the local state in case
 							// the remote data center goes down later by forcing us to failover for
 							// processing the replicated data snapshot obtained earlier from 
 							// that failed remote data center.
-							insertM(_remoteDataSnapshotFileNamesMap, fileName, true);
+							insertM(_remoteDataSnapshotNamesMap, dataSnapshotName, true);
 						} else {
-							appTrc(Trace.error, 
-								"_XXXXX_ Unable to replicate and persist the data snapshot in this file: " +
-								fileName + ". Error code=" + (rstring)rc, "RemoteDC-Watchdog");	
-	
-							// In this case, let us delete the data snapshot file.
-							// It is okay even if it returns an error.
-							remove(fileName, rc);
+							// Write the serialized heartbeat message combined with the 
+							// data snapshot to a file as it was received from the remote DC 
+							rc = writeBinaryDataToFile(BD.binaryPayload, fileName);
 							
-							// Since file write failed, remove this file name from our local state map.
-							if (has(_remoteDataSnapshotFileNamesMap, fileName) == true) {
-								removeM(_remoteDataSnapshotFileNamesMap, fileName);
-							}				
+							if (rc == 0) {
+								appTrc(Trace.info, 
+									"_XXXXX_ Successfully replicated and persisted the data snapshot in this file: " +
+									fileName, "RemoteDC-Watchdog");
+								// Remember this snapshot name in the local state of this operator.
+								// We will retrieve this from the local state in case
+								// the remote data center goes down later by forcing us to failover for
+								// processing the replicated data snapshot obtained earlier from 
+								// that failed remote data center.
+								insertM(_remoteDataSnapshotNamesMap, dataSnapshotName, true);
+							} else {
+								appTrc(Trace.error, 
+									"_XXXXX_ Unable to replicate and persist the data snapshot in this file: " +
+									fileName + ". Error code=" + (rstring)rc, "RemoteDC-Watchdog");	
+		
+								// In this case, let us delete the data snapshot file.
+								// It is okay even if it returns an error.
+								remove(fileName, rc);
+								
+								// Since file write failed, remove this file name from our local state map.
+								if (has(_remoteDataSnapshotNamesMap, dataSnapshotName) == true) {
+									removeM(_remoteDataSnapshotNamesMap, dataSnapshotName);
+								}				
+							}
 						}
 					}
 				}
@@ -1133,8 +1233,20 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 					// consumption and processing by the external application logic.
 					mutable blob myBlob = [];
 					
-					for (rstring fileName in _remoteDataSnapshotFileNamesMap) {
+					for (rstring name in _remoteDataSnapshotNamesMap) {
+						if (_dataSnapshotJdbcUrl != "") {
+	 						// If the snapshot storage is configured to an RDBMS, then 
+	 						// send this tuple to signal the reading of the 
+	 						// data snapshot DB row for a given data snapshot name.
+	 						_readSnapshotDBRowsMessage.id = name;
+	 						submit(_readSnapshotDBRowsMessage, RSDBR);
+	 						continue;
+	 					}		 				
+
+						// If the snapshot storage is configured to a file, then
+						// perform the following logic to read the snapshot from a file.
 						myBlob = (blob)[];
+						rstring fileName = _dataSnapshotStorageDirectory + "/" + name + ".snapshot";
 						mutable int32 rc = readBinaryDataFromFile(myBlob, fileName);
 						
 						if (rc != 0) {
@@ -1162,7 +1274,7 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 					// Since we made use of all the data snapshot files for switching over to
 					// (a.k.a failing over or taking over) this local data center,
 					// we can empty this map.
-					clearM(_remoteDataSnapshotFileNamesMap);
+					clearM(_remoteDataSnapshotNamesMap);
 				}
 				
 				onTuple SM: {
@@ -1174,16 +1286,17 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 				}
 			
 			config
-				threadedPort: queue(BD, Sys.Wait, 40);
-				
+				threadedPort: queue(BD, Sys.Wait, 40);				
 		}
 		
 		// This operator will read all the existing remote DC snapshot files and
 		// send that data to the external application's operators for processing.
 		// After that, it will delete those files. This can be initiated via an
-		// app config setting to do it at the local DC's startup or on demand via
-		// a special message sent from the external application (e-g: SendMeDataFromSnapshotFiles).
-		(stream<HeartbeatMessageType> ProcessDataFromRemoteDC2 as PDFRDC) 
+		// app config setting to retain the snapshot data at the local DC's startup 
+		// and then trigger it via a special message sent from the 
+		// external application (e-g: SendMeDataFromSnapshotFiles).
+		(stream<HeartbeatMessageType> ProcessDataFromRemoteDC2 as PDFRDC;
+		 stream<KeyForDatabaseReadOrDeleteType> ReadSnapshotDBRowsOnSpecialMessage as RSDBR) 
 			as SendSnapshotFilesData = Custom(ProcessDataFromSnapshotFiles as PDFSS) {
 			logic
 				state: {
@@ -1191,9 +1304,24 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 						readValueFromConfigFile($configFileName, 
 						$dataSnapshotStorageDirectoryKey, $dataSnapshotStorageDirectory);		 			
 					mutable HeartbeatMessageType _remoteDCMessageTuple = {};
+					rstring _dataSnapshotJdbcUrl = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcUrlKey, $dataSnapshotJdbcUrl);
+					mutable KeyForDatabaseReadOrDeleteType _readSnapshotDBRowsMessage = {};
 				}
 				
 				onTuple PDFSS: {
+					if (_dataSnapshotJdbcUrl != "") {
+ 						// If the snapshot storage is configured to an RDBMS, then 
+ 						// send this tuple to signal the reading of all the 
+ 						// data snapshot DB rows. An asterisk means read all the rows.
+ 						_readSnapshotDBRowsMessage.id = "*";
+ 						submit(_readSnapshotDBRowsMessage, RSDBR);
+ 						return;
+ 					}		 				
+
+					// Snapshot storage is configured for a file system.
+					// So, read it from the snapshot files.
  					mutable list<rstring> snapshotFileNamesList = [];
  					int32 fileCnt = get_file_names_in_a_directory(
  						_dataSnapshotStorageDirectory,
@@ -1234,11 +1362,330 @@ public composite CrossDataCenterFailover(input SerializedDataSnapshotMessage, Sp
 				} // End of onTuple PDFSS
 		}
 		
-		// This operator simply sends two similar input streams into one output stream.
+		// This operator simply merges three similar input streams into a single output stream.
 		(stream<HeartbeatMessageType> ProcessDataFromRemoteDC as PDFRDC)
-			as RemoteDCDataMerger = Functor(ProcessDataFromRemoteDC1, ProcessDataFromRemoteDC2) {
+			as RemoteDCDataMerger = Functor(ProcessDataFromRemoteDC1, 
+			ProcessDataFromRemoteDC2, ProcessDataFromRemoteDC3) {
 			param
 				filter: true;	
 		}
-		// === END OF THE REMOTE DATA CENTER HEARTBEAT and DATASNAPSHOT RECEIVING LOGIC ===
+		// === END OF THE REMOTE DATA CENTER HEARTBEAT and DATA SNAPSHOT RECEIVING LOGIC ===
+		
+		// === START OF THE DATA SNAPSHOT ACTIONS IN AN RDBMS ===
+		// Delete the data snapshot from the database.
+		(stream<DatabaseResponseType> SnapshotDeleteResult) 
+			as SnapshotRemover = CrossDCSnapshotJdbcRemover(DeleteSnapshotDBRowsOnLocalDCStartup,
+				DeleteSnapshotDBRowsOnRemoteDCFirstContact,
+				DeleteSnapshotDBRowOnRemoteDCOrderlyShutdown,
+				DeleteSnapshotDBRowOnRemoteDCFailure as I) {
+			logic
+				state: {
+					rstring _dataSnapshotJdbcDriverLib = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcDriverLibKey, $dataSnapshotJdbcDriverLib);
+
+					rstring _dataSnapshotJdbcClassName = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcClassNameKey, $dataSnapshotJdbcClassName);
+				
+					rstring _dataSnapshotJdbcUrl = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcUrlKey, $dataSnapshotJdbcUrl);
+
+					rstring _dataSnapshotJdbcUser = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcUserKey, $dataSnapshotJdbcUser);
+
+					rstring _dataSnapshotJdbcPassword = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcPasswordKey, $dataSnapshotJdbcPassword);
+
+					rstring _dataSnapshotTableName = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotTableNameKey, $dataSnapshotTableName);
+				
+					rstring _dataSnapshotPrimaryKeyColumnName = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotPrimaryKeyColumnNameKey, $dataSnapshotPrimaryKeyColumnName);				
+				}
+				
+			param
+				jdbcDriverLib: _dataSnapshotJdbcDriverLib;
+				jdbcClassName: _dataSnapshotJdbcClassName;
+				jdbcUrl: _dataSnapshotJdbcUrl;
+				jdbcUser: _dataSnapshotJdbcUser;
+				jdbcPassword: _dataSnapshotJdbcPassword;
+				tableName: _dataSnapshotTableName;
+				// This is an optional parameter.
+				primaryKeyColumnName: _dataSnapshotPrimaryKeyColumnName;
+				
+			config
+				threadedPort: queue(I, Sys.Wait);
+		}
+		
+		// Display the DB row(s) delete result.
+		() as SnapshotDeleteSink = Custom(SnapshotDeleteResult as SDR) {
+			logic 
+				onTuple SDR: {
+					appTrc(Trace.info, "Data snapshot deletion result=" + (rstring)SDR);				
+				}
+		}
+
+		// Read all the data snapshot DB rows from the database.
+		(stream<DataSnapshotRowType> SnapshotDBReadResultOnRemoteDCFirstContact) 
+			as SnapshotReaderOnRemoteDCFirstContact = 
+			CrossDCSnapshotJdbcReader(ReadSnapshotDBRowsOnRemoteDCFirstContact as I) {
+			logic
+				state: {
+					rstring _dataSnapshotJdbcDriverLib = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcDriverLibKey, $dataSnapshotJdbcDriverLib);
+
+					rstring _dataSnapshotJdbcClassName = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcClassNameKey, $dataSnapshotJdbcClassName);
+				
+					rstring _dataSnapshotJdbcUrl = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcUrlKey, $dataSnapshotJdbcUrl);
+
+					rstring _dataSnapshotJdbcUser = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcUserKey, $dataSnapshotJdbcUser);
+
+					rstring _dataSnapshotJdbcPassword = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcPasswordKey, $dataSnapshotJdbcPassword);
+
+					rstring _dataSnapshotTableName = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotTableNameKey, $dataSnapshotTableName);
+				
+					rstring _dataSnapshotPrimaryKeyColumnName = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotPrimaryKeyColumnNameKey, $dataSnapshotPrimaryKeyColumnName);				
+				}
+				
+			param
+				jdbcDriverLib: _dataSnapshotJdbcDriverLib;
+				jdbcClassName: _dataSnapshotJdbcClassName;
+				jdbcUrl: _dataSnapshotJdbcUrl;
+				jdbcUser: _dataSnapshotJdbcUser;
+				jdbcPassword: _dataSnapshotJdbcPassword;
+				tableName: _dataSnapshotTableName;
+				// This is an optional parameter.
+				primaryKeyColumnName: _dataSnapshotPrimaryKeyColumnName;
+
+			config
+				threadedPort: queue(I, Sys.Wait);
+		}
+
+		// Process the result of the DB row read we did above.
+		(stream<BinaryPayloadType> SerializedNonHeartbeatMessage2 as SNHM;
+		 stream<KeyForDatabaseReadOrDeleteType> DeleteSnapshotDBRowsOnRemoteDCFirstContact as DSDBR) 
+			as SnapshotReaderAnalyzerAtRemoteDCFirstContact = 
+			Custom(SnapshotDBReadResultOnRemoteDCFirstContact as I) {
+			logic
+				state: {
+					mutable HeartbeatMessageType _heartbeatMessage = {};
+					mutable KeyForDatabaseReadOrDeleteType _deleteSnapshotDBRowsMessage = {};
+		 			rstring _localDataCenterName = 
+						readValueFromConfigFile($configFileName, 
+						$localDataCenterNameKey, $localDataCenterName);
+		 			boolean _sendDataSnapshotsToOriginDCAtStartup = 
+						(boolean)readValueFromConfigFile($configFileName, 
+						$sendDataSnapshotsToOriginDCAtStartupKey, (rstring)$sendDataSnapshotsToOriginDCAtStartup);
+				}
+				
+				onTuple I: {
+		 			// At first contact from the remote DC, we initiated the
+		 			// database reads for the existing data snapshot rows.
+		 			// Those results are coming in now.
+					// This logic should be performed only when it is warranted.
+					if (_sendDataSnapshotsToOriginDCAtStartup == true &&
+						blobSize(I.snapshot) > 0ul) {
+						_heartbeatMessage.dataSnapshot = I.snapshot;
+						// It doesn't really matter that much to send an 
+						// exactly correct heartbeat count for this particular message.
+						_heartbeatMessage.heartbeatCnt = (uint64)1234567;
+						_heartbeatMessage.dataCenterOrigin = _localDataCenterName;
+						// Set the heartbeat message type to indicate that it 
+						// carries snapshot data that originated from the remoteDC which is
+						// being sent back there based on user's request.
+						_heartbeatMessage.heartbeatMsgType = 4u;
+						// We will serialize this entire tuple containing four different attributes.
+						mutable BinaryPayloadType oTuple = {};
+						serializeTuple(_heartbeatMessage, oTuple.binaryPayload);
+						// Send this away to the remote DC.
+						submit(oTuple, SNHM);
+						appTrc(Trace.error,
+							"_XXXXX_ During application startup, we sent " +
+							(rstring)blobSize(_heartbeatMessage.dataSnapshot) +
+							" bytes of the binary data snapshot to the remote DC from this DB row: " +
+							I.id, "Heartbeat-Message-Preparer");
+					} 		 		
+		 		}
+		 		
+		 		onPunct I: {
+		 			// This is a punctuation signal coming from the snapshot DB row reader.
+		 			// It indicates that all the rows have been read and sent to this operator.
+		 			// Since this is part of the logic during first contact from the remote DC,
+		 			// we can delete all the snapshot DB rows now to start from a clean slate.
+					//
+					if (currentPunct() == Sys.WindowMarker) {
+						// * (an asterisk) here means delete all the rows in the DB table.
+						_deleteSnapshotDBRowsMessage.id = "*";
+						submit(_deleteSnapshotDBRowsMessage, DSDBR);
+					}
+		 		}
+		}
+		
+		// Write the data snapshot DB row to the database.
+		(stream<DatabaseResponseType> SnapshotInsertResult) 
+			as SnapshotInserter = CrossDCSnapshotJdbcWriter(InsertSnapshotDBRow as I) {
+			logic
+				state: {
+					rstring _dataSnapshotJdbcDriverLib = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcDriverLibKey, $dataSnapshotJdbcDriverLib);
+
+					rstring _dataSnapshotJdbcClassName = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcClassNameKey, $dataSnapshotJdbcClassName);
+				
+					rstring _dataSnapshotJdbcUrl = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcUrlKey, $dataSnapshotJdbcUrl);
+
+					rstring _dataSnapshotJdbcUser = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcUserKey, $dataSnapshotJdbcUser);
+
+					rstring _dataSnapshotJdbcPassword = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcPasswordKey, $dataSnapshotJdbcPassword);
+
+					rstring _dataSnapshotTableName = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotTableNameKey, $dataSnapshotTableName);
+				
+					rstring _dataSnapshotPrimaryKeyColumnName = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotPrimaryKeyColumnNameKey, $dataSnapshotPrimaryKeyColumnName);				
+				}
+
+			param
+				jdbcDriverLib: _dataSnapshotJdbcDriverLib;
+				jdbcClassName: _dataSnapshotJdbcClassName;
+				jdbcUrl: _dataSnapshotJdbcUrl;
+				jdbcUser: _dataSnapshotJdbcUser;
+				jdbcPassword: _dataSnapshotJdbcPassword;
+				tableName: _dataSnapshotTableName;
+				// This is an optional parameter.
+				primaryKeyColumnName: _dataSnapshotPrimaryKeyColumnName;
+
+			config
+				threadedPort: queue(I, Sys.Wait);
+		}
+
+		// Process the result of the DB row insert we did above.
+		() as SnapshotInsertResultSink = Custom(SnapshotInsertResult as I) {
+			logic
+				onTuple I: {
+					if (I.result == true) {
+						appTrc(Trace.info, 
+							"_XXXXX_ Successfully replicated and persisted the data snapshot in the DB. Result=" +
+							I.resultMsg, "RemoteDC-Watchdog");
+					} else {
+						appTrc(Trace.error, 
+							"_XXXXX_ Unable to replicate and persist the data snapshot in the DB. Result=" +
+							I.resultMsg, "RemoteDC-Watchdog");	
+					}				
+				}	
+		}
+		
+		// Read the data snapshot DB row(s). Either all rows or for a given snapshot id.
+		(stream<DataSnapshotRowType> SnapshotDBReadResultOnRemoteDCFailureOrOnSpecialMessage) 
+			as SnapshotReaderOnRemoteDCFailureOrOnSpecialMessage = 
+			CrossDCSnapshotJdbcReader(ReadSnapshotDBRowOnRemoteDCFailure, 
+			ReadSnapshotDBRowsOnSpecialMessage as I) {
+			logic
+				state: {
+					rstring _dataSnapshotJdbcDriverLib = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcDriverLibKey, $dataSnapshotJdbcDriverLib);
+
+					rstring _dataSnapshotJdbcClassName = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcClassNameKey, $dataSnapshotJdbcClassName);
+				
+					rstring _dataSnapshotJdbcUrl = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcUrlKey, $dataSnapshotJdbcUrl);
+
+					rstring _dataSnapshotJdbcUser = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcUserKey, $dataSnapshotJdbcUser);
+
+					rstring _dataSnapshotJdbcPassword = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotJdbcPasswordKey, $dataSnapshotJdbcPassword);
+
+					rstring _dataSnapshotTableName = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotTableNameKey, $dataSnapshotTableName);
+				
+					rstring _dataSnapshotPrimaryKeyColumnName = 
+						readValueFromConfigFile($configFileName, 
+						$dataSnapshotPrimaryKeyColumnNameKey, $dataSnapshotPrimaryKeyColumnName);				
+				}
+				
+			param
+				jdbcDriverLib: _dataSnapshotJdbcDriverLib;
+				jdbcClassName: _dataSnapshotJdbcClassName;
+				jdbcUrl: _dataSnapshotJdbcUrl;
+				jdbcUser: _dataSnapshotJdbcUser;
+				jdbcPassword: _dataSnapshotJdbcPassword;
+				tableName: _dataSnapshotTableName;
+				// This is an optional parameter.
+				primaryKeyColumnName: _dataSnapshotPrimaryKeyColumnName;
+
+			config
+				threadedPort: queue(I, Sys.Wait);
+		}
+
+		// Process the result of the DB row(s) read we did above.
+		(stream<HeartbeatMessageType> ProcessDataFromRemoteDC3 as PDFRDC;
+		 stream<KeyForDatabaseReadOrDeleteType> DeleteSnapshotDBRowOnRemoteDCFailure as DSDBR) 
+			as SnapshotReaderAnalyzerOnRemoteDCFailure = 
+			Custom(SnapshotDBReadResultOnRemoteDCFailureOrOnSpecialMessage as I) {
+			logic
+				state: {
+					mutable HeartbeatMessageType _remoteDCMessageTuple = {};
+					mutable KeyForDatabaseReadOrDeleteType _deleteSnapshotDBRowsMessage = {};
+				}
+				
+				onTuple I: {
+					// We issued a DB row read command from the code above that detects
+					// the remote DC failure. Result from that DB row read is arriving now.
+					// In addition, we could have also issued a DB rows read command based on
+					// a user's special message. Those results could also be arriving now.
+					if (blobSize(I.snapshot) > 0ul) {
+						// Convert this blob to tuple now.
+						_remoteDCMessageTuple = (HeartbeatMessageType){};
+						deserializeTuple(_remoteDCMessageTuple, I.snapshot);
+						// Send this tuple out now.
+						submit(_remoteDCMessageTuple, PDFRDC);
+					} else {
+						appTrc(Trace.error,
+							"_XXXXX_ Skipping the zero length binary data snapshot: " +
+							I.id, "RemoteDC-Watchdog");					
+					}
+					
+					// Delete this snapshot data from the DB since we are done with it.
+					_deleteSnapshotDBRowsMessage.id = I.id;
+					submit(_deleteSnapshotDBRowsMessage, DSDBR);
+		 		}
+		}
+		// === END OF THE DATA SNAPSHOT ACTIONS IN AN RDBMS ===
 } // End of the CrossDataCenterFailover composite.
