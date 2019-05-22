@@ -112,7 +112,22 @@ crossDCHttpPort=25091
 # If you have multiple machines, separate them by a comma: Machine1,Machine2,Machine3
 remoteDataCenterApplicationMachineNames=d0702.pok.hpc-ng.ibm.com,b0517.pok.hpc-ng.ibm.com
 # Specify the data snapshot storage directory.
+# (Leave it commented out when not using a file system based storage.)
 dataSnapshotStorageDirectory=/storage/sen/cross-dc-snapshot/CrossDataCenterFailoverSample/dc2
+# Specify the Relational Database access details for the data snapshot storage.
+# (Leave them all commented out when not using an RDBMS based storage.)
+#dataSnapshotJdbcUrl=jdbc:db2://h0319b14.pok.hpc-ng.ibm.com:50000/boadb
+#dataSnapshotJdbcUser=dragon
+#dataSnapshotJdbcPassword=fire
+##### You must create an opt sub-directory at the top-level of your 
+##### application directory and then copy the required JDBC driver file there.
+#dataSnapshotJdbcDriverLib=opt/db2jcc4.jar
+#dataSnapshotJdbcClassName=com.ibm.db2.jcc.DB2Driver
+##### You can name your table and its columns as you like.
+##### But, keep the order and type of the columns as shown below:
+##### id varchar(256) NOT NULL, replicationTime varchar(256), snapshot BLOB(32M), PRIMARY KEY (id)
+#dataSnapshotTableName=dc2_cdc_rep
+#dataSnapshotPrimaryKeyColumnName=id
 #
 # For all the config values that appear below, you can leave them as it is unless you
 # really have a need to change them. In most cases, the default value below is sufficient.

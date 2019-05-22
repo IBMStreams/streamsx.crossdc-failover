@@ -1,0 +1,244 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html
+  PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xml:lang="en-us" lang="en-us">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+<meta name="copyright" content="(C) Copyright 2005"/>
+<meta name="DC.rights.owner" content="(C) Copyright 2005"/>
+<meta name="DC.Type" content="reference"/>
+<meta name="DC.Title" content="SPL File CrossDataCenterFailover.spl"/>
+<meta name="DC.Format" content="XHTML"/>
+<meta name="DC.Identifier" content="spldoc_compilationunit"/>
+<link rel="stylesheet" type="text/css" href="../../html/commonltr.css"/>
+<link rel="stylesheet" type="text/css" href="../../html/spldoc.css"/>
+<title>SPL File CrossDataCenterFailover.spl</title>
+</head>
+<body id="spldoc_compilationunit">
+
+
+<h1 class="title topictitle1">SPL File <tt class="ph tt">CrossDataCenterFailover.spl</tt></h1>
+
+<div class="body refbody">
+<div class="section">
+<p class="p">
+<a class="xref" href="../toolkits/toolkits.html">crossdc-failover</a> &gt; <a class="xref" href="tk$com.ibm.streamsx.crossdc-failover.html">com.ibm.streamsx.crossdc-failover 1.0.1</a> &gt; <a class="xref" href="ns$com.ibm.streamsx.crossdc.failover.html">com.ibm.streamsx.crossdc.failover</a> &gt; CrossDataCenterFailover.spl</p>
+
+</div>
+
+<div class="section"><h2 class="title sectiontitle splhead-1">Content</h2>
+  
+  <dl class="dl">
+    <dt class="dt dlterm"/>
+<dd class="dd"/>
+
+    
+      <dt class="dt dlterm splhead-2">Operators</dt>
+
+      <dd class="dd">
+<ul class="sl simple">
+<li class="sli"><strong class="ph b"><a class="xref" href="spl$com.ibm.streamsx.crossdc.failover$CrossDataCenterFailover.html#spldoc_compilationunit__composite_operator__CrossDataCenterFailover">CrossDataCenterFailover</a></strong>
+</li>
+
+</ul>
+
+      </dd>
+
+    
+  </dl>
+
+</div>
+
+<div class="section"><h2 class="title sectiontitle splhead-1">Composites</h2>
+  
+</div>
+
+<div class="section" id="spldoc_compilationunit__composite_operator__CrossDataCenterFailover"><h2 class="title sectiontitle splpart">composite CrossDataCenterFailover(output DataSnapshotSignal, RemoteDataCenterStatus, ProcessDataFromRemoteDC; input SerializedDataSnapshotMessage, SpecialMessage)</h2>
+  
+</div>
+
+<div class="section"><h2 class="title sectiontitle">Parameters</h2>
+
+<ul class="sl simple">
+<li class="sli"><strong class="ph b">localDataCenterName</strong>
+</li>
+
+<li class="sli"><strong class="ph b">crossDCOperationMode</strong>
+</li>
+
+<li class="sli"><strong class="ph b">crossDCHttpPort</strong>
+</li>
+
+<li class="sli"><strong class="ph b">remoteDataCenterApplicationMachineNames</strong>
+</li>
+
+<li class="sli"><strong class="ph b">crossDCInitDelay</strong>
+</li>
+
+<li class="sli"><strong class="ph b">heartbeatExchangeInterval</strong>
+</li>
+
+<li class="sli"><strong class="ph b">consecutiveHeartbeatMissesAllowed</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotExchangeInterval</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotStorageDirectory</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotJdbcUrl</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotJdbcUser</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotJdbcPassword</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotJdbcDriverLib</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotJdbcClassName</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotTableName</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotPrimaryKeyColumnName</strong>
+</li>
+
+<li class="sli"><strong class="ph b">sendToAllRemoteMachines</strong>
+</li>
+
+<li class="sli"><strong class="ph b">alwaysLogHttpErrors</strong>
+</li>
+
+<li class="sli"><strong class="ph b">httpConnectionTimeout</strong>
+</li>
+
+<li class="sli"><strong class="ph b">httpReadTimeout</strong>
+</li>
+
+<li class="sli"><strong class="ph b">numberOfHttpSenderReceiverPairs</strong>
+</li>
+
+<li class="sli"><strong class="ph b">remoteDataCenterUrlPathForHeartbeatReceiver</strong>
+</li>
+
+<li class="sli"><strong class="ph b">remoteDataCenterUrlPath</strong>
+</li>
+
+<li class="sli"><strong class="ph b">retainOlderDataSnapshotsAtStartup</strong>
+</li>
+
+<li class="sli"><strong class="ph b">sendDataSnapshotsToOriginDCAtStartup</strong>
+</li>
+
+<li class="sli"><strong class="ph b">configFileName</strong>
+</li>
+
+<li class="sli"><strong class="ph b">localDataCenterNameKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">crossDCOperationModeKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">crossDCHttpPortKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">remoteDataCenterApplicationMachineNamesKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotStorageDirectoryKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotJdbcUrlKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotJdbcUserKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotJdbcPasswordKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotJdbcDriverLibKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotJdbcClassNameKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotTableNameKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotPrimaryKeyColumnNameKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">crossDCInitDelayKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">heartbeatExchangeIntervalKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">consecutiveHeartbeatMissesAllowedKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">dataSnapshotExchangeIntervalKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">sendToAllRemoteMachinesKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">alwaysLogHttpErrorsKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">httpConnectionTimeoutKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">httpReadTimeoutKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">retainOlderDataSnapshotsAtStartupKey</strong>
+</li>
+
+<li class="sli"><strong class="ph b">sendDataSnapshotsToOriginDCAtStartupKey</strong>
+</li>
+
+</ul>
+
+</div>
+
+<div class="section"><h2 class="title sectiontitle">Input Ports</h2>
+
+<ul class="sl simple">
+<li class="sli"><strong class="ph b">SerializedDataSnapshotMessage</strong>
+</li>
+
+<li class="sli"><strong class="ph b">SpecialMessage</strong>
+</li>
+
+</ul>
+
+</div>
+
+<div class="section"><h2 class="title sectiontitle">Output Ports</h2>
+
+<ul class="sl simple">
+<li class="sli"><strong class="ph b">DataSnapshotSignal</strong>
+</li>
+
+<li class="sli"><strong class="ph b">RemoteDataCenterStatus</strong>
+</li>
+
+<li class="sli"><strong class="ph b">ProcessDataFromRemoteDC</strong>
+</li>
+
+</ul>
+
+</div>
+
+</div>
+
+
+</body>
+</html>

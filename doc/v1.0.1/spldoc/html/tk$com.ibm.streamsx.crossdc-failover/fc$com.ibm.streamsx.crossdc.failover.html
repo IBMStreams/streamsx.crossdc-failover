@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html
+  PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xml:lang="en-us" lang="en-us">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+<meta name="copyright" content="(C) Copyright 2005"/>
+<meta name="DC.rights.owner" content="(C) Copyright 2005"/>
+<meta name="DC.Type" content="reference"/>
+<meta name="DC.Title" content="C++ Native Functions: com.ibm.streamsx.crossdc.failover"/>
+<meta name="DC.Format" content="XHTML"/>
+<meta name="DC.Identifier" content="spldoc_functions"/>
+<link rel="stylesheet" type="text/css" href="../../html/commonltr.css"/>
+<link rel="stylesheet" type="text/css" href="../../html/spldoc.css"/>
+<title>C++ Native Functions: com.ibm.streamsx.crossdc.failover</title>
+</head>
+<body id="spldoc_functions">
+
+
+<h1 class="title topictitle1">C++ Native Functions: <tt class="ph tt">com.ibm.streamsx.crossdc.failover</tt></h1>
+
+<div class="body refbody">
+<div class="section">
+<p class="p">
+<a class="xref" href="../toolkits/toolkits.html">crossdc-failover</a> &gt; <a class="xref" href="tk$com.ibm.streamsx.crossdc-failover.html">com.ibm.streamsx.crossdc-failover 1.0.1</a> &gt; <a class="xref" href="ns$com.ibm.streamsx.crossdc.failover.html">com.ibm.streamsx.crossdc.failover</a> &gt; C++ Native Functions</p>
+
+</div>
+
+<div class="section">
+This page documents native functions that can be invoked from SPL, including the SPL interfaces that can be used to invoke each of the native functions.
+</div>
+
+<div class="section">
+<p class="p splhead-1"><strong class="ph b"><a class="xref" href="../references/FunctionModel.html#spldoc_reference_function_model__functionset__functions">Functions</a></strong></p>
+<dl class="dl" compact="compact">
+ 
+   <dt class="dt dlterm splpart" id="spldoc_functions__delete_files_in_a_directory.rstring.rstring"><tt class="ph tt">      public int32 delete_files_in_a_directory(rstring directory, rstring extension)      </tt>   </dt>
+
+   <dd class="dd">
+<p class="p">Delete all the files in a directory with a given file extension
+</p>
+
+   </dd>
+
+ 
+ 
+   <dt class="dt dlterm splpart" id="spldoc_functions__deserializeDataItem.T.blob"><tt class="ph tt">      &lt;any T&gt; public void deserializeDataItem(mutable T myData, blob myBlob)      </tt>   </dt>
+
+   <dd class="dd">
+<p class="p">Deserialize a given blob into its original data item made of some SPL type
+</p>
+
+   </dd>
+
+ 
+ 
+   <dt class="dt dlterm splpart" id="spldoc_functions__deserializeTuple.T.blob"><tt class="ph tt">      &lt;tuple T&gt; public void deserializeTuple(mutable T myTuple, blob myBlob)      </tt>   </dt>
+
+   <dd class="dd">
+<p class="p">Deserialize the blob into a tuple
+</p>
+
+   </dd>
+
+ 
+ 
+   <dt class="dt dlterm splpart" id="spldoc_functions__get_file_names_in_a_directory.rstring.rstring.list:.:rstring:.:"><tt class="ph tt">      public int32 get_file_names_in_a_directory(rstring directory, rstring extension, mutable list&lt;rstring&gt; fileNamesList)      </tt>   </dt>
+
+   <dd class="dd">
+<p class="p">Get a list of names of all the files in a directory with a given file extension
+</p>
+
+   </dd>
+
+ 
+ 
+   <dt class="dt dlterm splpart" id="spldoc_functions__launch_app.rstring"><tt class="ph tt">      public int32 launch_app(rstring appName)      </tt>   </dt>
+
+   <dd class="dd">
+<p class="p">Launch the given external application.
+</p>
+
+   </dd>
+
+ 
+ 
+   <dt class="dt dlterm splpart" id="spldoc_functions__serializeDataItem.T.blob"><tt class="ph tt">      &lt;any T&gt; public void serializeDataItem(T myData, mutable blob myBlob)      </tt>   </dt>
+
+   <dd class="dd">
+<p class="p">Serialize any given data item made of some SPL type into a blob
+</p>
+
+   </dd>
+
+ 
+ 
+   <dt class="dt dlterm splpart" id="spldoc_functions__serializeTuple.T.blob"><tt class="ph tt">      &lt;tuple T&gt; public void serializeTuple(T myTuple, mutable blob myBlob)      </tt>   </dt>
+
+   <dd class="dd">
+<p class="p">Serialize a given tuple to a blob
+</p>
+
+   </dd>
+
+ 
+</dl>
+
+</div>
+
+</div>
+
+
+</body>
+</html>

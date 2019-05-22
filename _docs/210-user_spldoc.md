@@ -11,6 +11,10 @@ sidebar:
 {% include toc %}
 {%include editme %}
 
-#### v1.0.0 (Latest)
+#### v1.0.1 (Latest)
+
+[Toolkit Documentation (SPLDoc)](/streamsx.crossdc-failover/doc/spldoc/html/)
+
+#### v1.0.0
 
 [Toolkit Documentation (SPLDoc)](/streamsx.crossdc-failover/doc/v1.0.0/spldoc/html/)
