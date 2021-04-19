@@ -60,6 +60,7 @@ st  submitjob  -d  <YOUR_DC1_STREAMS_DOMAIN>  -i  <YOUR_DC1_STREAMS_INSTANCE>  o
 
 st  submitjob  -d  <YOUR_DC2_STREAMS_DOMAIN>  -i  <YOUR_DC2_STREAMS_INSTANCE>  output/com.ibm.streamsx.crossdc.failover.sample.CrossDataCenterFailoverSample.sab -P configFileName=<YOUR_DC2_CROSSDC_CONFIG_FILE> -C tracing=info
 ```
+In an upcoming release, the data replication scheme between the two data centers will get modernized for better performance and persistent connection.
 
 ## WHATS NEW
 v1.0.1:
