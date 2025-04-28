@@ -1,5 +1,8 @@
 # crossdc-failover toolkit for IBM Streams
 
+## Note about a major planned change in this toolkit
+In an upcoming release either in 2025 or in 2026 (depending on the customer demand), creator of this toolkit (Senthil Nathan) is planning to change the underlying HTTP based mechanism used for the cross-dc communication to a more robust Websocket technology. That will significantly improve the data replication performance, persistent connection, data security, quick detection of the remote data center failure etc. Those customers who are using this toolkit, please be aware of this plan. Thank you.
+
 ## Purpose
 This toolkit is designed to provide application-level failover across two data centers. Two identical copies of a given Streams application running in two data centers either in active/active or in active/passive mode can achieve the failover a.k.a switchover when one of the data centers goes down. There is also an optional feature to do a periodic replication of the application's in-memory state across the two data centers in order for a surviving data center to take over the data replicated from the failed data center. In summary, this toolkit serves the purpose of enabling a given IBM Streams application for Disaster Recovery (DR) and Business Continuity (BC).
 
@@ -60,7 +63,6 @@ st  submitjob  -d  <YOUR_DC1_STREAMS_DOMAIN>  -i  <YOUR_DC1_STREAMS_INSTANCE>  o
 
 st  submitjob  -d  <YOUR_DC2_STREAMS_DOMAIN>  -i  <YOUR_DC2_STREAMS_INSTANCE>  output/com.ibm.streamsx.crossdc.failover.sample.CrossDataCenterFailoverSample.sab -P configFileName=<YOUR_DC2_CROSSDC_CONFIG_FILE> -C tracing=info
 ```
-In an upcoming release, the data replication scheme between the two data centers will get modernized for better performance and persistent connection.
 
 ## WHATS NEW
 v1.0.1:
