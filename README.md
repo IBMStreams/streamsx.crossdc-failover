@@ -1,7 +1,7 @@
 # crossdc-failover toolkit for IBM Streams
 
-## Note about a major planned change in this toolkit
-In an upcoming release either in 2025 or in 2026 (depending on the customer demand), creator of this toolkit (Senthil Nathan) is planning to change the underlying HTTP based mechanism used for the cross-dc communication to a more robust Websocket technology. That will significantly improve the data replication performance, persistent connection, data security, quick detection of the remote data center failure etc. Those customers who are using this toolkit, please be aware of this plan. Thank you.
+## Note from the toolkit author
+This toolkit created by Senthil Nathan is a differentiator for key customers. He is now an independent software consultant. To benefit from the compelling features of this asset, for any enhancements, any need for a new powerful toolkit as well as for creating new data streaming solutions, customers can email senthil@moonraytech.com to reach him. Thank you.
 
 ## Purpose
 This toolkit is designed to provide application-level failover across two data centers. Two identical copies of a given Streams application running in two data centers either in active/active or in active/passive mode can achieve the failover a.k.a switchover when one of the data centers goes down. There is also an optional feature to do a periodic replication of the application's in-memory state across the two data centers in order for a surviving data center to take over the data replicated from the failed data center. In summary, this toolkit serves the purpose of enabling a given IBM Streams application for Disaster Recovery (DR) and Business Continuity (BC).
